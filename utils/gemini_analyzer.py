@@ -59,15 +59,10 @@ class GeminiVideoAnalyzer:
         """
         self.api_key = api_key
         
-        # Create httpx client with 10-minute timeout
-        custom_httpx_client = httpx.Client(
-            timeout=httpx.Timeout(600.0, connect=60.0)  # 600s total, 60s connect
-        )
-        
-        # Set HTTP options with custom client
+        # Set HTTP options
         http_options = types.HttpOptions(
             api_version=api_version if api_version else None,
-            httpx_client=custom_httpx_client
+            timeout=600000  # 10 minutes in milliseconds
         )
         
         self.client = genai.Client(

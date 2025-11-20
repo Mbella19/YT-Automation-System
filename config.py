@@ -36,14 +36,14 @@ GEMINI_TTS_MODEL = "gemini-2.5-flash-tts" # User requested model
 
 # Gemini settings
 GEMINI_TEMPERATURE = 1.0  # High creativity for long-form recap generation
-GEMINI_TIMESTAMP_TEMPERATURE = 0.2  # Alignment call temperature
+GEMINI_TIMESTAMP_TEMPERATURE = 0.4  # Alignment call temperature
 GEMINI_TWO_PASS_ANALYSIS = True  # Use two-pass analysis for better content sync (recommended but costs more)
 GEMINI_API_DELAY_SECONDS = 60  # Delay between API calls (120s = 2 mins for free tier, 0 for paid tier)
 GEMINI_API_MAX_RETRIES = 3  # Retry Gemini requests on transient failures
 GEMINI_API_RETRY_BACKOFF_SECONDS = 5  # Base delay between retry attempts
 
 # Video processing synchronization settings
-AUDIO_START_DELAY_MS = 250  # Milliseconds of silence before narration starts (helps with perception)
+AUDIO_START_DELAY_MS = 0  # Milliseconds of silence before narration starts (helps with perception)
 USE_AUDIO_BASED_TIMING = True  # Use audio duration to determine clip length (recommended for perfect sync)
 
 # Logging

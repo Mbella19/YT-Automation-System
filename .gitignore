@@ -25,8 +25,33 @@ wheels/
 
 # Virtual environments
 venv/
+backend/venv/
 ENV/
 env/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp/
+.pnp.js
+*.log
+
+# React build
+frontend/build/
+frontend/dist/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+*.db.backup
+
+# Uploads
+backend/uploads/*
+!backend/uploads/.gitkeep
+uploads/
 
 # IDE
 .vscode/
@@ -39,12 +64,10 @@ env/
 .DS_Store
 Thumbs.db
 
-# Project specific
-uploads/
+# Project specific (YT Automation)
 outputs/
 temp/
 audio/
-*.log
 *.mp4
 *.avi
 *.mov
@@ -58,6 +81,7 @@ audio/
 # Environment variables
 .env
 .env.local
+.env.production
 
 # Logs
 *.log
@@ -65,3 +89,13 @@ logs/
 
 # Gemini/Antigravity
 .gemini/
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Gemini/Antigravity
+.gemini/
+=======
+>>>>>>> 147aeb689204f9a01df5b3f06ba46cc2fb46d05b

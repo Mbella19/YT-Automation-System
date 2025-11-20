@@ -3,10 +3,14 @@ Configuration file for Video Editing Automation
 """
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
-# API Keys
-GEMINI_API_KEY = "AIzaSyDDWL3BtdVPsYQJZTeg9plkvfiQge-0w-M"
-GEMINI_TTS_API_KEY = "AIzaSyA61rJ8QNeeSZeLBhZtb5J-5D4WNYRlmJ8" # Dedicated key for TTS
+# Load environment variables from .env file
+load_dotenv()
+
+# API Keys - Load from environment variables
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_TTS_API_KEY = os.getenv("GEMINI_TTS_API_KEY")
 
 # Gemini model and client configuration
 GEMINI_MODEL_NAME = "gemini-3-pro-preview"

@@ -1,0 +1,10 @@
+# Frontend Dependencies (CDNs)
+
+## CSS Framework
+- Tailwind CSS: https://cdn.tailwindcss.com
+
+## Icons
+- Material Symbols Outlined: https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined
+
+## Fonts
+- Google Fonts (via Material Symbols link)

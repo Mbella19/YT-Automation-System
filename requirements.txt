@@ -1,0 +1,9 @@
+flask
+flask-cors
+werkzeug
+python-dotenv
+google-genai
+google-cloud-texttospeech>=2.29.0
+requests
+gdown
+httpx

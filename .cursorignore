@@ -1,0 +1,23 @@
+# Ignore environment files from Cursor
+.env
+*.env
+
+# Ignore dependencies
+node_modules/
+venv/
+
+# Ignore build outputs
+dist/
+build/
+
+# Ignore uploads
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# Ignore database
+*.db
+*.sqlite
+
+# Ignore logs
+*.log
+

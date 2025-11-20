@@ -1,17 +1,23 @@
-/* Neobrutalist Design System */
+/* Dark Neo-Brutalist Design System */
 @import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@800&display=swap');
 
 :root {
-    --bg-color: #f2f2f2;
-    --surface-color: #ffffff;
-    --text-color: #000000;
-    --border-color: #000000;
-    --primary-color: #8b5cf6; /* Violet */
-    --accent-color: #f472b6; /* Pink */
-    --success-color: #4ade80; /* Green */
-    --error-color: #ef4444; /* Red */
-    --border-width: 3px;
-    --shadow-offset: 5px;
+    --bg-color: #09090b;
+    --surface-color: #18181b;
+    --text-color: #e4e4e7;
+    --border-color: #3f3f46;
+    --primary-color: #3b82f6;
+    /* Blue */
+    --accent-color: #8b5cf6;
+    /* Purple */
+    --success-color: #10b981;
+    /* Green */
+    --error-color: #ef4444;
+    /* Red */
+    --shadow-color: #000000;
+    --border-width: 2px;
+    --shadow-offset: 6px;
 }
 
 * {
@@ -21,7 +27,7 @@
 }
 
 body {
-    font-family: 'Space Mono', monospace;
+    font-family: 'Space Mono', monospace, ui-monospace, SFMono-Regular;
     background-color: var(--bg-color);
     color: var(--text-color);
     line-height: 1.5;
@@ -29,9 +35,22 @@ body {
     padding: 20px;
 }
 
+/* Background Grid Pattern */
+.bg-grid {
+    background-size: 40px 40px;
+    background-image: linear-gradient(to right, #27272a 1px, transparent 1px),
+        linear-gradient(to bottom, #27272a 1px, transparent 1px);
+}
+
 /* Typography */
-h1, h2, h3, h4, h5, h6 {
-    font-family: 'Archivo Black', sans-serif;
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-family: 'Inter', sans-serif;
+    font-weight: 800;
     text-transform: uppercase;
     letter-spacing: -0.02em;
     line-height: 1.1;
@@ -41,8 +60,15 @@ h1, h2, h3, h4, h5, h6 {
 .neo-box {
     background: var(--surface-color);
     border: var(--border-width) solid var(--border-color);
-    box-shadow: var(--shadow-offset) var(--shadow-offset) 0px var(--border-color);
+    box-shadow: var(--shadow-offset) var(--shadow-offset) 0px 0px var(--shadow-color);
     margin-bottom: 20px;
+    transition: all 0.1s ease;
+}
+
+.neo-box:hover {
+    border-color: #a1a1aa;
+    transform: translate(-1px, -1px);
+    box-shadow: calc(var(--shadow-offset) + 1px) calc(var(--shadow-offset) + 1px) 0px 0px var(--shadow-color);
 }
 
 .neo-box-flat {
@@ -55,39 +81,59 @@ h1, h2, h3, h4, h5, h6 {
     align-items: center;
     justify-content: center;
     gap: 10px;
-    background: var(--primary-color);
-    color: white;
-    font-family: 'Archivo Black', sans-serif;
+    background: #27272a;
+    color: #fff;
+    font-family: 'Inter', sans-serif;
+    font-weight: 700;
     text-transform: uppercase;
-    border: var(--border-width) solid var(--border-color);
-    box-shadow: var(--shadow-offset) var(--shadow-offset) 0px var(--border-color);
+    letter-spacing: 0.05em;
+    border: var(--border-width) solid #e4e4e7;
+    box-shadow: 4px 4px 0px 0px #e4e4e7;
     padding: 12px 24px;
     cursor: pointer;
-    transition: all 0.1s ease;
+    transition: all 0.1s cubic-bezier(0.4, 0, 0.2, 1);
     text-decoration: none;
     font-size: 1rem;
+    position: relative;
 }
 
 .neo-btn:hover {
     transform: translate(-2px, -2px);
-    box-shadow: calc(var(--shadow-offset) + 2px) calc(var(--shadow-offset) + 2px) 0px var(--border-color);
+    box-shadow: 6px 6px 0px 0px #e4e4e7;
 }
 
 .neo-btn:active {
-    transform: translate(2px, 2px);
-    box-shadow: 1px 1px 0px var(--border-color);
+    transform: translate(4px, 4px);
+    box-shadow: 0px 0px 0px 0px #e4e4e7;
 }
 
-.neo-btn-secondary {
+.neo-btn.primary {
+    background: var(--primary-color);
+    border-color: var(--primary-color);
+    box-shadow: 4px 4px 0px 0px #1d4ed8;
+}
+
+.neo-btn.primary:active {
+    box-shadow: 0px 0px 0px 0px #1d4ed8;
+}
+
+.neo-btn.secondary {
     background: var(--surface-color);
     color: var(--text-color);
+    border-color: var(--border-color);
+    box-shadow: 4px 4px 0px 0px var(--border-color);
+}
+
+.neo-btn.secondary:active {
+    box-shadow: 0px 0px 0px 0px var(--border-color);
 }
 
 .neo-input {
     width: 100%;
     padding: 12px;
     border: var(--border-width) solid var(--border-color);
-    background: var(--surface-color);
+    background: #000;
+    color: #fff;
     font-family: 'Space Mono', monospace;
     font-size: 1rem;
     border-radius: 0;
@@ -96,7 +142,8 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .neo-input:focus {
-    box-shadow: 4px 4px 0px var(--border-color);
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5);
 }
 
 /* Layout Specifics */
@@ -108,9 +155,9 @@ h1, h2, h3, h4, h5, h6 {
 header {
     margin-bottom: 40px;
     padding: 20px;
-    background: #fff;
+    background: var(--surface-color);
     border: var(--border-width) solid var(--border-color);
-    box-shadow: var(--shadow-offset) var(--shadow-offset) 0px var(--border-color);
+    box-shadow: var(--shadow-offset) var(--shadow-offset) 0px 0px var(--shadow-color);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -126,29 +173,31 @@ header {
     font-weight: bold;
     font-size: 0.8em;
     text-transform: uppercase;
+    box-shadow: 2px 2px 0px 0px black;
 }
 
 /* Upload Section */
 .upload-zone {
     border: var(--border-width) dashed var(--border-color);
-    background: #fff;
+    background: #000;
     padding: 40px;
     text-align: center;
-    transition: background 0.2s;
+    transition: all 0.2s;
     cursor: pointer;
     position: relative;
 }
 
 .upload-zone:hover {
-    background: #f9f9f9;
+    background: #111;
+    border-color: var(--text-color);
 }
 
 /* Processing Section */
 .terminal-window {
-    background: #1a1a1a;
+    background: #000;
     color: #33ff00;
     border: var(--border-width) solid var(--border-color);
-    box-shadow: var(--shadow-offset) var(--shadow-offset) 0px var(--border-color);
+    box-shadow: var(--shadow-offset) var(--shadow-offset) 0px 0px var(--shadow-color);
     padding: 20px;
     font-family: 'Space Mono', monospace;
 }
@@ -170,23 +219,23 @@ header {
 
 .progress-container {
     border: var(--border-width) solid var(--border-color);
-    height: 30px;
-    background: #fff;
+    height: 24px;
+    background: #000;
     margin: 20px 0;
     position: relative;
 }
 
 .progress-bar {
     height: 100%;
-    background: var(--primary-color);
+    background: var(--success-color);
     width: 0%;
     transition: width 0.3s;
-    border-right: var(--border-width) solid var(--border-color);
+    border-right: var(--border-width) solid #000;
 }
 
 /* Results Section */
 .scene-card {
-    background: #fff;
+    background: var(--surface-color);
     border: var(--border-width) solid var(--border-color);
     margin-bottom: 15px;
     transition: transform 0.2s;
@@ -196,37 +245,70 @@ header {
 
 .scene-card:hover {
     transform: translateX(5px);
+    border-color: var(--primary-color);
 }
 
 .scene-card.active {
-    background: #f0f9ff;
-    box-shadow: 4px 4px 0px var(--border-color);
+    background: #1e293b;
+    border-color: var(--primary-color);
+    box-shadow: 4px 4px 0px var(--primary-color);
 }
 
 .stat-box {
-    background: #fff;
+    background: var(--surface-color);
     border: var(--border-width) solid var(--border-color);
     padding: 15px;
     text-align: center;
 }
 
 .stat-value {
-    font-family: 'Archivo Black', sans-serif;
-    font-size: 2rem;
+    font-family: 'Inter', sans-serif;
+    font-size: 1.5rem;
+    font-weight: 800;
     display: block;
+    color: var(--text-color);
 }
 
 .stat-label {
     text-transform: uppercase;
-    font-size: 0.8rem;
+    font-size: 0.7rem;
     font-weight: bold;
+    color: #a1a1aa;
+    letter-spacing: 0.05em;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #27272a;
+    border-left: 2px solid #3f3f46;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #52525b;
+    border: 2px solid #27272a;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #71717a;
 }
 
 /* Animations */
 @keyframes pulse {
-    0% { opacity: 1; }
-    50% { opacity: 0.5; }
-    100% { opacity: 1; }
+    0% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.5;
+    }
+
+    100% {
+        opacity: 1;
+    }
 }
 
 .animate-pulse {
@@ -238,7 +320,7 @@ header {
     .neo-btn {
         width: 100%;
     }
-    
+
     header {
         flex-direction: column;
         text-align: center;

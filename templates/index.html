@@ -13,8 +13,10 @@
             theme: {
                 extend: {
                     colors: {
-                        primary: '#8b5cf6',
-                        accent: '#f472b6',
+                        primary: '#3b82f6',
+                        accent: '#8b5cf6',
+                        surface: '#18181b',
+                        border: '#3f3f46',
                     }
                 }
             }
@@ -22,22 +24,23 @@
     </script>
 </head>
 
-<body>
+<body class="bg-grid">
     <div class="container">
         <!-- Header -->
         <header>
             <div class="flex items-center gap-4">
                 <div class="w-12 h-12 bg-black text-white flex items-center justify-center border-2 border-black">
-                    <span class="material-symbols-outlined text-3xl">smart_toy</span>
+                    <span class="material-symbols-outlined text-3xl text-blue-500">smart_toy</span>
                 </div>
                 <div>
-                    <h1 class="text-2xl md:text-3xl font-black uppercase tracking-tighter">VideoAI Studio</h1>
-                    <p class="font-mono text-sm opacity-70">Automated Narrative Engine v2.0</p>
+                    <h1 class="text-2xl md:text-3xl font-black uppercase tracking-tighter text-white">VideoAI Studio
+                    </h1>
+                    <p class="font-mono text-sm opacity-70 text-gray-400">Automated Narrative Engine v2.0</p>
                 </div>
             </div>
             <div class="flex items-center gap-4">
                 <div class="badge">SYSTEM ONLINE</div>
-                <div class="font-mono text-xs">Ready for input</div>
+                <div class="font-mono text-xs text-gray-400">Ready for input</div>
             </div>
         </header>
 
@@ -45,17 +48,18 @@
             <!-- Upload Section -->
             <section id="step-upload" class="py-10">
                 <div class="neo-box p-8">
-                    <h2 class="text-3xl mb-6 border-b-4 border-black pb-4">Initialize Session</h2>
+                    <h2 class="text-3xl mb-6 border-b-2 border-zinc-700 pb-4 text-white">Initialize Session</h2>
 
                     <div id="uploadAlert"
-                        class="hidden bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6 font-mono"
+                        class="hidden bg-red-900/20 border-l-4 border-red-500 text-red-400 p-4 mb-6 font-mono"
                         role="alert"></div>
 
                     <form id="uploadForm" enctype="multipart/form-data" class="grid grid-cols-1 lg:grid-cols-2 gap-12">
                         <div class="space-y-8">
                             <!-- Title Input -->
                             <div>
-                                <label for="movieTitle" class="block font-bold uppercase mb-2">Target Title
+                                <label for="movieTitle" class="block font-bold uppercase mb-2 text-gray-300">Target
+                                    Title
                                     (Movie/Series)</label>
                                 <input id="movieTitle" name="movie_title" type="text" placeholder="ENTER TITLE..."
                                     class="neo-input" required>
@@ -65,8 +69,8 @@
                             <!-- File Upload -->
                             <div class="upload-zone group">
                                 <span
-                                    class="material-symbols-outlined text-6xl mb-4 group-hover:scale-110 transition-transform">upload_file</span>
-                                <h3 class="text-xl font-bold mb-2">DROP VIDEO SOURCE</h3>
+                                    class="material-symbols-outlined text-6xl mb-4 group-hover:scale-110 transition-transform text-gray-500 group-hover:text-white">upload_file</span>
+                                <h3 class="text-xl font-bold mb-2 text-white">DROP VIDEO SOURCE</h3>
                                 <p class="font-mono text-sm text-gray-500 mb-6">MP4, MKV, AVI (MAX 500MB)</p>
 
                                 <input id="videoFile" name="video" type="file" accept="video/*" class="hidden">
@@ -74,45 +78,50 @@
                                     <span class="material-symbols-outlined">folder</span>
                                     SELECT FILE
                                 </button>
-                                <p id="selectedFileName" class="mt-4 font-mono font-bold">NO FILE SELECTED</p>
+                                <p id="selectedFileName" class="mt-4 font-mono font-bold text-blue-400">NO FILE SELECTED
+                                </p>
                             </div>
 
                             <!-- Divider -->
                             <div class="flex items-center gap-4">
-                                <div class="h-1 bg-black flex-1"></div>
-                                <span class="font-black uppercase">OR</span>
-                                <div class="h-1 bg-black flex-1"></div>
+                                <div class="h-px bg-zinc-700 flex-1"></div>
+                                <span class="font-black uppercase text-zinc-500">OR</span>
+                                <div class="h-px bg-zinc-700 flex-1"></div>
                             </div>
 
                             <!-- Drive Link -->
                             <div>
-                                <label for="driveUrl" class="block font-bold uppercase mb-2">Google Drive Link</label>
+                                <label for="driveUrl" class="block font-bold uppercase mb-2 text-gray-300">Google Drive
+                                    Link</label>
                                 <div class="relative">
                                     <input id="driveUrl" name="drive_url" type="text" placeholder="PASTE URL..."
                                         class="neo-input pl-12">
                                     <span
-                                        class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2">link</span>
+                                        class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">link</span>
                                 </div>
                             </div>
                         </div>
 
                         <div class="flex flex-col h-full">
                             <div class="flex-1">
-                                <label for="instructions" class="block font-bold uppercase mb-2">Directive Parameters
+                                <label for="instructions" class="block font-bold uppercase mb-2 text-gray-300">Directive
+                                    Parameters
                                     (Optional)</label>
-                                <div class="neo-box-flat h-full p-0 overflow-hidden flex flex-col">
-                                    <div class="bg-black text-white px-4 py-2 font-mono text-xs flex justify-between">
+                                <div class="neo-box-flat h-full p-0 overflow-hidden flex flex-col border-zinc-700">
+                                    <div
+                                        class="bg-black text-white px-4 py-2 font-mono text-xs flex justify-between border-b border-zinc-800">
                                         <span>USER_INSTRUCTIONS.TXT</span>
-                                        <span>EDIT MODE</span>
+                                        <span class="text-green-500">EDIT MODE</span>
                                     </div>
                                     <textarea id="instructions" name="instructions"
-                                        class="flex-1 w-full p-4 font-mono text-sm resize-none focus:outline-none bg-white"
+                                        class="flex-1 w-full p-4 font-mono text-sm resize-none focus:outline-none bg-zinc-900 text-gray-300 placeholder-zinc-600"
                                         placeholder="// Enter specific instructions for the narrative engine..."></textarea>
                                 </div>
                             </div>
 
                             <div class="mt-8">
-                                <button id="submitBtn" type="submit" class="neo-btn w-full justify-center text-xl py-6">
+                                <button id="submitBtn" type="submit"
+                                    class="neo-btn primary w-full justify-center text-xl py-6">
                                     <span class="material-symbols-outlined">rocket_launch</span>
                                     INITIATE PROCESSING
                                 </button>
@@ -126,13 +135,14 @@
             <section id="step-processing" class="hidden py-10">
                 <div class="max-w-4xl mx-auto">
                     <div class="neo-box p-8">
-                        <div class="flex items-center justify-between mb-8 border-b-4 border-black pb-4">
+                        <div class="flex items-center justify-between mb-8 border-b-2 border-zinc-700 pb-4">
                             <div>
-                                <h2 class="text-3xl">Processing Pipeline</h2>
-                                <p id="processingSubtitle" class="font-mono text-sm mt-2">EXECUTING TASKS...</p>
+                                <h2 class="text-3xl text-white">Processing Pipeline</h2>
+                                <p id="processingSubtitle" class="font-mono text-sm mt-2 text-gray-400">EXECUTING
+                                    TASKS...</p>
                             </div>
                             <div class="text-right">
-                                <div class="text-4xl font-black" id="progressPercent">0%</div>
+                                <div class="text-4xl font-black text-blue-500" id="progressPercent">0%</div>
                             </div>
                         </div>
 
@@ -140,7 +150,7 @@
                         <div class="progress-container">
                             <div id="progressFill" class="progress-bar"></div>
                         </div>
-                        <p id="progressText" class="font-mono text-center mb-8 font-bold">INITIALIZING...</p>
+                        <p id="progressText" class="font-mono text-center mb-8 font-bold text-white">INITIALIZING...</p>
 
                         <!-- Stats Grid -->
                         <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
@@ -154,7 +164,7 @@
                             </div>
                             <div class="stat-box">
                                 <span class="stat-label">STAGE</span>
-                                <span id="processingStage" class="stat-value text-lg truncate">INIT</span>
+                                <span id="processingStage" class="stat-value text-lg truncate text-blue-400">INIT</span>
                             </div>
                             <div class="stat-box">
                                 <span class="stat-label">START TIME</span>
@@ -174,7 +184,7 @@
                         </div>
 
                         <div id="processingError"
-                            class="hidden mt-6 bg-red-100 border-4 border-red-500 p-4 font-mono text-red-700"></div>
+                            class="hidden mt-6 bg-red-900/20 border-4 border-red-500 p-4 font-mono text-red-400"></div>
 
                         <div class="mt-6 text-right">
                             <button id="processingBackBtn" type="button" class="hidden neo-btn neo-btn-secondary">
@@ -188,12 +198,12 @@
             <!-- Results Section -->
             <section id="step-results" class="hidden py-10">
                 <div class="neo-box p-8">
-                    <div class="flex flex-wrap items-end justify-between gap-6 mb-8 border-b-4 border-black pb-6">
+                    <div class="flex flex-wrap items-end justify-between gap-6 mb-8 border-b-2 border-zinc-700 pb-6">
                         <div>
                             <div class="badge inline-block mb-2">MISSION COMPLETE</div>
-                            <h2 class="text-4xl">Output Manifest</h2>
-                            <p class="font-mono mt-2">TARGET: <span id="resultMovieTitle"
-                                    class="font-bold bg-yellow-300 px-2">-</span></p>
+                            <h2 class="text-4xl text-white">Output Manifest</h2>
+                            <p class="font-mono mt-2 text-gray-400">TARGET: <span id="resultMovieTitle"
+                                    class="font-bold text-yellow-400 px-2">-</span></p>
                         </div>
                         <div class="flex gap-4">
                             <div class="stat-box min-w-[120px]">
@@ -210,8 +220,8 @@
                     <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
                         <!-- Scene List -->
                         <div class="lg:col-span-1">
-                            <h3 class="text-xl mb-4 flex items-center gap-2">
-                                <span class="material-symbols-outlined">view_list</span>
+                            <h3 class="text-xl mb-4 flex items-center gap-2 text-white">
+                                <span class="material-symbols-outlined text-blue-500">view_list</span>
                                 SEGMENTS
                             </h3>
                             <div id="sceneList" class="flex flex-col gap-2 h-[600px] overflow-y-auto pr-2">
@@ -224,25 +234,26 @@
                             <div class="neo-box-flat p-6 flex-1 flex flex-col">
                                 <div class="mb-4">
                                     <p id="sceneMeta" class="font-mono text-xs text-gray-500 mb-1">NO SELECTION</p>
-                                    <h3 id="sceneTitle" class="text-2xl">SELECT A SEGMENT</h3>
+                                    <h3 id="sceneTitle" class="text-2xl text-white">SELECT A SEGMENT</h3>
                                 </div>
 
                                 <div class="relative flex-1 mb-6">
-                                    <div class="absolute top-0 left-0 bg-black text-white px-2 py-1 text-xs font-mono">
+                                    <div
+                                        class="absolute top-0 left-0 bg-blue-600 text-white px-2 py-1 text-xs font-mono font-bold">
                                         NARRATION_SCRIPT</div>
                                     <textarea id="sceneNarration" readonly
-                                        class="w-full h-full min-h-[200px] p-6 pt-8 border-2 border-black bg-gray-50 font-mono text-sm resize-none focus:outline-none"></textarea>
+                                        class="w-full h-full min-h-[200px] p-6 pt-8 border-2 border-zinc-700 bg-black font-mono text-sm text-gray-300 resize-none focus:outline-none"></textarea>
                                 </div>
 
                                 <div
-                                    class="flex flex-wrap items-center justify-between gap-4 border-t-2 border-black pt-4">
+                                    class="flex flex-wrap items-center justify-between gap-4 border-t-2 border-zinc-700 pt-4">
                                     <div id="currentClipActions">
                                         <a id="currentClipDownload" href="#" target="_blank"
                                             class="hidden neo-btn text-sm py-2">
                                             <span class="material-symbols-outlined">download</span>
                                             DOWNLOAD CLIP
                                         </a>
-                                        <span id="noClipMessage" class="hidden font-mono text-xs text-gray-400">NO CLIP
+                                        <span id="noClipMessage" class="hidden font-mono text-xs text-gray-500">NO CLIP
                                             DATA</span>
                                     </div>
 
@@ -252,8 +263,8 @@
                             </div>
 
                             <!-- Global Actions -->
-                            <div class="neo-box-flat p-6 bg-gray-100">
-                                <h4 class="font-bold uppercase mb-4">Global Assets</h4>
+                            <div class="neo-box-flat p-6 bg-zinc-900">
+                                <h4 class="font-bold uppercase mb-4 text-gray-400">Global Assets</h4>
                                 <div class="flex flex-wrap gap-4 mb-6">
                                     <a id="downloadScriptBtn" href="#" target="_blank"
                                         class="hidden neo-btn neo-btn-secondary text-sm py-2">
@@ -273,16 +284,17 @@
                                 </div>
 
                                 <div class="mb-6">
-                                    <label for="fullRecapScript" class="block font-bold uppercase mb-2 text-xs">Full
+                                    <label for="fullRecapScript"
+                                        class="block font-bold uppercase mb-2 text-xs text-gray-500">Full
                                         Narrative Script</label>
                                     <textarea id="fullRecapScript" readonly
-                                        class="w-full h-32 p-4 border-2 border-black font-mono text-xs resize-y focus:outline-none"
+                                        class="w-full h-32 p-4 border-2 border-zinc-700 bg-black font-mono text-xs text-gray-400 resize-y focus:outline-none"
                                         placeholder="SCRIPT DATA PENDING..."></textarea>
                                 </div>
 
-                                <div class="pt-6 border-t-2 border-gray-300">
+                                <div class="pt-6 border-t-2 border-zinc-700">
                                     <p id="alignmentNotes"
-                                        class="hidden font-mono text-xs text-red-500 mb-4 bg-red-100 p-2 border border-red-500">
+                                        class="hidden font-mono text-xs text-red-400 mb-4 bg-red-900/20 p-2 border border-red-500">
                                     </p>
 
                                     <button id="processAnotherBtn" type="button"

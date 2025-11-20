@@ -217,8 +217,8 @@ class GeminiVideoAnalyzer:
             self._wait_for_rate_limit()
             
             script_prompt = textwrap.dedent(f"""
-                You are a seasoned storyteller creating a recap for the YouTube channel "Movie Recaps".
-                Use Google Search to gather accurate, spoiler-friendly information about "{movie_title}" before writing.
+                You are a seasoned movie script researcher creating a recap for the YouTube channel "Movie Recaps".
+                Use Google Search to gather accurate information about "{movie_title}" before writing.
                 
                 REQUIREMENTS:
                 • Write a single continuous third-person narrative with no headings or bullet lists.
@@ -291,8 +291,9 @@ class GeminiVideoAnalyzer:
                 TASK:
                 • Break the script into chronological segments that match what happens on-screen.
                 • For each segment, provide the exact HH:MM:SS start and end timestamps from the video.
-                • Include the corresponding narration text (verbatim or lightly smoothed) in the `narration` field.
-                • Ensure the narration lines up with character actions and plot beats visible in that range.
+                • Ensure the script lines up with character actions and plot beats visible in that range.
+                • Be sure to do it for the whole movie.
+                • Make sure u use the entire script with the entire video.
                 • CRITICAL: Watch the full movie first and understand it. Match the script with the exact moments they happen in this movie/tv series.
                 • Timestamps provided MUST match perfectly with the time of the original video (e.g., 00:11 to 00:21 must match exactly on the main video).
                 • Create quick, short cuts: aim for clips between 5 seconds and 15 seconds duration.

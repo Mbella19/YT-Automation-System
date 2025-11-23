@@ -2,7 +2,10 @@ import requests
 import json
 import os
 
-API_KEY = "AIzaSyA61rJ8QNeeSZeLBhZtb5J-5D4WNYRlmJ8"
+from dotenv import load_dotenv
+load_dotenv()
+
+API_KEY = os.getenv("GEMINI_TTS_API_KEY")
 URL = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={API_KEY}"
 
 data = {

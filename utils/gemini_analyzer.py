@@ -217,17 +217,19 @@ class GeminiVideoAnalyzer:
             self._wait_for_rate_limit()
             
             script_prompt = textwrap.dedent(f"""
-                You are a seasoned movie script researcher creating a recap for the YouTube channel "Movie Recaps".
+                You are a seasoned movie script researcher. create a movie recap script for "{movie_title}".
+                The format should use a step-by-step narration of the plot, describing key scenes, characters, and twists, condensing the movie's full storyline into a short video with commentary and insights.
                 Use Google Search to gather accurate information about "{movie_title}" before writing.
                 
                 REQUIREMENTS:
                 • Write a single continuous third-person narrative with no headings or bullet lists.
-                • Match the energetic, descriptive tone used in Movie Recaps videos.
+                • Have an energetic, descriptive.
                 • Break the plot down into sequential beats, but keep the output as one flowing script.
-                • Include character motivations, twists, and cause-effect storytelling.
                 • Do not invent events—ground every plot detail in the actual movie/series.
-                • If the title cannot be verified, state that directly instead of guessing.
-                • Keep the pacing engaging with natural sentence transitions (light contractions are fine).
+                • Keep the pacing engaging with natural sentence transitions.
+                • Ensure the script is at least 2000 words long.
+                • STRICTLY FORBIDDEN: Do not use visual language like "The camera pans", "We see", "The screen opens", or "The shot changes". Write purely as a storyteller describing events, not a camera operator.
+                • Here is an example of what i am looking for "On top of a building, Gabriel watches the city. He's a low-ranking guardian angel, and his duty is to save people from crashing while texting and driving. He appears in the backseat of their cars, and with just a little touch, he makes them stop the vehicle just in time. One day, Gabriel sits behind Arj, an aspiring documentarian who does random jobs to survive. Today, he's frustrated because he's been turned down for another job, and he admits he's close to giving up. After reading the texts, Gabriel touches Arj to make him stop the car, but now he's worried about Arj's mental state. Afterward, Arj does some chores for the app Task Sergeant. First, he goes to a popular bakery that has a very long line outside. He's not there to buy anything for himself. He's being paid by someone else to wait in line for them. After 2 hours of waiting, the clerk announces that there are no buns left. Arj calls his client to explain, but sadly, the client cancels the task anyway. Arj is even more frustrated when he discovers most of the buns were bought by Jeff, a rich guy who's a priority customer."
                 
                 {instruction_block if instruction_block else ''}
                 

@@ -1,17 +1,10 @@
 """
-Gemini TTS integration using Google Cloud Text-to-Speech API
+Gemini TTS integration using Google Cloud Text-to-Speech REST API
 """
-from google.cloud import texttospeech
-from google.api_core import client_options
 import os
-from pathlib import Path
-from utils.logger import setup_logger
-
-logger = setup_logger()
-
-import requests
 import json
 import base64
+import requests
 from utils.logger import setup_logger
 
 logger = setup_logger()

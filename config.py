@@ -39,7 +39,7 @@ CLIP_DURATION_MAX = 40  # seconds
 GEMINI_TTS_MODEL = "gemini-2.5-flash-tts" # User requested model
 
 # Gemini settings
-GEMINI_TEMPERATURE = 1.0  # High creativity for long-form recap generation
+GEMINI_TEMPERATURE = 0.0  # High creativity for long-form recap generation
 GEMINI_TIMESTAMP_TEMPERATURE = 0.0  # Alignment call temperature
 GEMINI_TWO_PASS_ANALYSIS = True  # Use two-pass analysis for better content sync (recommended but costs more)
 GEMINI_API_DELAY_SECONDS = 60  # Delay between API calls (120s = 2 mins for free tier, 0 for paid tier)

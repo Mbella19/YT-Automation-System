@@ -128,6 +128,53 @@ document.addEventListener('DOMContentLoaded', () => {
         logContent.scrollTop = logContent.scrollHeight;
     }
 
+    function parseLogForProgress(entry) {
+        const message = entry.message || entry.formatted || '';
+        if (!message) return;
+
+        // Step 2: Downloading
+        if (message.includes('Step 2: Downloading video') || message.includes('Step 2: Saving uploaded video')) {
+            updateProgress(10, 'Acquiring Video...');
+            setStage('Acquiring Video');
+        }
+        // Step 3: Splitting
+        else if (message.includes('Step 3: Splitting video')) {
+            updateProgress(20, 'Splitting Video...');
+            setStage('Splitting Video');
+        }
+        // Chunk Analysis
+        else if (message.includes('Processing Chunk')) {
+            const match = message.match(/Processing Chunk (\d+)\/(\d+)/);
+            if (match) {
+                const current = parseInt(match[1]);
+                const total = parseInt(match[2]);
+                const percentage = 20 + ((current / total) * 50); // Map 20-70%
+                updateProgress(percentage, `Analyzing Chunk ${current}/${total}...`);
+                setStage(`Analyzing Chunk ${current}/${total}`);
+            }
+        }
+        // Step 4: Audio
+        else if (message.includes('Step 4: Generating narration audio')) {
+            updateProgress(75, 'Generating Narration...');
+            setStage('Generating Audio');
+        }
+        // Step 5: Processing Clips
+        else if (message.includes('Step 5: Processing video clips')) {
+            updateProgress(85, 'Cutting Video Clips...');
+            setStage('Processing Clips');
+        }
+        // Step 6: Concatenation
+        else if (message.includes('Step 6: Creating final concatenated video')) {
+            updateProgress(95, 'Rendering Final Video...');
+            setStage('Finalizing');
+        }
+        // Completion
+        else if (message.includes('VIDEO PROCESSING COMPLETED SUCCESSFULLY')) {
+            updateProgress(100, 'Processing Complete!');
+            setStage('Complete');
+        }
+    }
+
     function startLogStream(sessionId) {
         stopLogStream();
         if (!sessionId) {
@@ -138,6 +185,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 const payload = JSON.parse(event.data);
                 appendLogEntry(payload);
+                parseLogForProgress(payload);
             } catch (error) {
                 console.error('Failed to parse log payload', error);
             }
@@ -234,7 +282,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
     }
-    
+
     function resetScriptDetails() {
         if (fullRecapScript) {
             fullRecapScript.value = '';
@@ -252,7 +300,22 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function resetInterface() {
+    async function resetInterface() {
+        if (state.sessionId) {
+            try {
+                await fetch('/api/cleanup', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ session_id: state.sessionId }),
+                });
+                console.log('Session cleaned up:', state.sessionId);
+            } catch (error) {
+                console.error('Failed to cleanup session:', error);
+            }
+        }
+
         if (uploadForm) {
             uploadForm.reset();
         }
@@ -598,10 +661,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const instructions = instructionsInput ? instructionsInput.value.trim() : '';
             const movieTitle = movieTitleInput ? movieTitleInput.value.trim() : '';
 
-            if (!movieTitle) {
-                showUploadAlert('Please provide the movie or series title.');
-                return;
-            }
+            // Movie title is no longer required
+            // if (!movieTitle) {
+            //    showUploadAlert('Please provide the movie or series title.');
+            //    return;
+            // }
 
             if (!videoFile && !driveUrl) {
                 showUploadAlert('Please upload a video or provide a Google Drive link.');
@@ -624,6 +688,13 @@ document.addEventListener('DOMContentLoaded', () => {
             if (instructions) {
                 formData.append('instructions', instructions);
             }
+            // Script text is now the main input
+            const scriptText = instructionsInput ? instructionsInput.value.trim() : '';
+            if (!scriptText) {
+                showUploadAlert('Please paste the script text.');
+                return;
+            }
+            formData.append('script_text', scriptText);
             formData.append('movie_title', movieTitle);
             formData.append('session_id', sessionId);
 

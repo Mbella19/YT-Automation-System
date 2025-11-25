@@ -3,6 +3,7 @@ FFmpeg video processing utilities
 """
 import subprocess
 import re
+import shutil
 from pathlib import Path
 from utils.logger import setup_logger
 
@@ -28,6 +29,54 @@ class VideoProcessor:
         except Exception as e:
             logger.error(f"Error verifying ffmpeg: {str(e)}")
     
+    def get_video_duration(self, input_path):
+        """
+        Get the duration of the video in seconds using ffprobe, with ffmpeg fallback.
+        Matches reference implementation for robustness.
+        """
+        input_path = str(input_path)
+        
+        # Try using ffprobe first as it's cleaner
+        if shutil.which("ffprobe"):
+            command = [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                input_path,
+            ]
+            try:
+                result = subprocess.run(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=True,
+                    text=True,
+                )
+                return float(result.stdout.strip())
+            except (subprocess.CalledProcessError, ValueError):
+                pass  # Fallback to ffmpeg if ffprobe fails or output is invalid
+
+        # Fallback to ffmpeg
+        command = [self.ffmpeg_path, "-i", input_path]
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        # ffmpeg outputs to stderr
+        # Pattern: Duration: 00:00:00.00
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", result.stderr)
+        if match:
+            hours = int(match.group(1))
+            minutes = int(match.group(2))
+            seconds = float(match.group(3))
+            return hours * 3600 + minutes * 60 + seconds
+        
+        logger.error("Could not determine video duration.")
+        return None
+
     def get_audio_duration(self, audio_path):
         """
         Get duration of audio file in seconds using ffprobe
@@ -84,6 +133,96 @@ class VideoProcessor:
         else:
             raise ValueError(f"Invalid timestamp format: {timestamp}")
     
+    def _run_ffmpeg_trim(self, input_path, output_path, start, end):
+        """Invoke ffmpeg to trim the input video into output_path."""
+        duration = end - start
+        if duration <= 0:
+            raise ValueError("End time must be after start time.")
+
+        command = [
+            self.ffmpeg_path,
+            "-hide_banner",
+            "-loglevel", "error",
+            "-ss", str(start),
+            "-i", str(input_path),
+            "-t", str(duration),
+            "-c", "copy",
+            str(output_path),
+        ]
+        
+        # Add -y to overwrite
+        command.insert(1, "-y")
+
+        process = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if process.returncode != 0:
+            error_msg = process.stderr.decode("utf-8", errors="ignore").strip()
+            raise RuntimeError(f"FFmpeg trim failed: {error_msg}")
+
+    def split_video(self, input_path, chunk_duration=600):
+        """
+        Split video into chunks of specified duration using the reference logic.
+        
+        Args:
+            input_path: Path to input video file
+            chunk_duration: Duration of each chunk in seconds (default: 600s = 10m)
+            
+        Returns:
+            List of paths to the generated video chunks
+        """
+        try:
+            input_path = Path(input_path)
+            if not input_path.exists():
+                raise FileNotFoundError(f"Input video not found: {input_path}")
+                
+            output_dir = input_path.parent / "chunks"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            duration = self.get_video_duration(input_path)
+            if not duration:
+                raise ValueError("Could not determine video duration")
+            
+            logger.info(f"Splitting video (duration: {duration:.2f}s) into chunks of {chunk_duration}s")
+            
+            chunk_paths = []
+            current_start = 0.0
+            clip_index = 1
+            
+            while current_start < duration:
+                current_end = min(current_start + chunk_duration, duration)
+                chunk_filename = f"chunk_{clip_index:03d}.mp4"
+                chunk_path = output_dir / chunk_filename
+                
+                logger.info(f"Generating chunk {clip_index}: {chunk_filename} ({current_start:.1f}s - {current_end:.1f}s)")
+                
+                try:
+                    self._run_ffmpeg_trim(input_path, chunk_path, current_start, current_end)
+                    
+                    # Verify chunk was created and is valid
+                    if not chunk_path.exists():
+                        raise FileNotFoundError(f"Chunk file was not created: {chunk_path}")
+                    if chunk_path.stat().st_size == 0:
+                        raise ValueError(f"Chunk file is empty: {chunk_path}")
+                        
+                    chunk_paths.append(chunk_path)
+                    logger.info(f"✓ Chunk {clip_index} created")
+                except Exception as e:
+                    logger.error(f"Failed to create chunk {clip_index}: {str(e)}")
+                    raise
+                
+                current_start += chunk_duration
+                clip_index += 1
+                    
+            return chunk_paths
+            
+        except Exception as e:
+            logger.error(f"Error splitting video: {str(e)}", exc_info=True)
+            raise
+
     def extract_and_process_clip(self, input_video, start_time, end_time, 
                                 audio_path, output_path, start_delay_ms=250):
         """
@@ -327,4 +466,3 @@ class VideoProcessor:
         except Exception as e:
             logger.error(f"Error concatenating clips: {str(e)}", exc_info=True)
             raise
-

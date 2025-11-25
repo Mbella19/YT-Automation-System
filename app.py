@@ -12,13 +12,12 @@ from flask import (
 )
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
-import os
 import json
 import queue
 import traceback
 from datetime import datetime
 
-# Import our utilities
+# Import lightweight utilities first (fast startup)
 from utils.logger import (
     setup_logger,
     set_session_context,
@@ -26,42 +25,59 @@ from utils.logger import (
     register_log_listener,
     unregister_log_listener,
 )
-from utils.drive_downloader import download_from_drive
-from utils.gemini_analyzer import GeminiVideoAnalyzer
-from utils.gemini_tts import GeminiTTS
-from utils.video_processor import VideoProcessor
 import config
 
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max file size
+app.config['MAX_CONTENT_LENGTH'] = None  # Disable max file size limit
 
 # Setup logger
 logger = setup_logger(log_file=config.LOG_FILE)
 
-# Initialize services
-gemini_analyzer = GeminiVideoAnalyzer(
-    api_key=config.GEMINI_API_KEY,
-    api_delay_seconds=config.GEMINI_API_DELAY_SECONDS,
-    narration_temperature=config.GEMINI_TEMPERATURE,
-    timestamp_temperature=config.GEMINI_TIMESTAMP_TEMPERATURE,
-    max_retries=config.GEMINI_API_MAX_RETRIES,
-    retry_backoff_seconds=config.GEMINI_API_RETRY_BACKOFF_SECONDS,
-    model_name=config.GEMINI_MODEL_NAME,
-    api_version=config.GEMINI_API_VERSION,
-    thinking_level=config.GEMINI_THINKING_LEVEL
-)
-gemini_tts = GeminiTTS(
-    api_key=config.GEMINI_TTS_API_KEY,
-    model_name=config.GEMINI_TTS_MODEL
-)
-video_processor = VideoProcessor(config.FFMPEG_PATH)
+# Lazy-loaded services (initialized on first request for faster startup)
+_services = {
+    'gemini_analyzer': None,
+    'gemini_tts': None,
+    'video_processor': None,
+    'initialized': False
+}
 
-logger.info(f"Two-pass analysis: {'ENABLED' if config.GEMINI_TWO_PASS_ANALYSIS else 'DISABLED'}")
-logger.info(f"Gemini API rate limit: {config.GEMINI_API_DELAY_SECONDS}s delay between calls")
-logger.info(f"Audio-based timing: {'ENABLED' if config.USE_AUDIO_BASED_TIMING else 'DISABLED'}")
-logger.info(f"Audio start delay: {config.AUDIO_START_DELAY_MS}ms")
+def _get_services():
+    """Lazy initialization of heavy services on first use."""
+    if not _services['initialized']:
+        logger.info("Initializing services on first request...")
+
+        # Import heavy modules only when needed
+        from utils.gemini_analyzer import GeminiVideoAnalyzer
+        from utils.gemini_tts import GeminiTTS
+        from utils.video_processor import VideoProcessor
+
+        _services['gemini_analyzer'] = GeminiVideoAnalyzer(
+            api_key=config.GEMINI_API_KEY,
+            api_delay_seconds=config.GEMINI_API_DELAY_SECONDS,
+            narration_temperature=config.GEMINI_TEMPERATURE,
+            timestamp_temperature=config.GEMINI_TIMESTAMP_TEMPERATURE,
+            max_retries=config.GEMINI_API_MAX_RETRIES,
+            retry_backoff_seconds=config.GEMINI_API_RETRY_BACKOFF_SECONDS,
+            model_name=config.GEMINI_MODEL_NAME,
+            api_version=config.GEMINI_API_VERSION,
+            thinking_level=config.GEMINI_THINKING_LEVEL
+        )
+        _services['gemini_tts'] = GeminiTTS(
+            api_key=config.GEMINI_TTS_API_KEY,
+            model_name=config.GEMINI_TTS_MODEL
+        )
+        _services['video_processor'] = VideoProcessor(config.FFMPEG_PATH)
+        _services['initialized'] = True
+
+        logger.info(f"Two-pass analysis: {'ENABLED' if config.GEMINI_TWO_PASS_ANALYSIS else 'DISABLED'}")
+        logger.info(f"Gemini API rate limit: {config.GEMINI_API_DELAY_SECONDS}s delay between calls")
+        logger.info(f"Audio-based timing: {'ENABLED' if config.USE_AUDIO_BASED_TIMING else 'DISABLED'}")
+        logger.info(f"Audio start delay: {config.AUDIO_START_DELAY_MS}ms")
+        logger.info("Services initialized successfully")
+
+    return _services
 
 logger.info("=" * 80)
 logger.info("Video Automation Server Starting")
@@ -89,7 +105,13 @@ def process_video():
         logger.info("=" * 80)
         logger.info("NEW VIDEO PROCESSING REQUEST")
         logger.info("=" * 80)
-        
+
+        # Get lazy-loaded services
+        services = _get_services()
+        gemini_analyzer = services['gemini_analyzer']
+        gemini_tts = services['gemini_tts']
+        video_processor = services['video_processor']
+
         video_path = None
         requested_session_id = (request.form.get('session_id') or '').strip()
         if requested_session_id:
@@ -112,12 +134,11 @@ def process_video():
         
         logger.info(f"Session ID: {session_id}")
         
-        # Required metadata
+        # Optional metadata
         movie_title = request.form.get('movie_title', '').strip()
         if not movie_title:
-            logger.error("Movie title missing from request")
-            return jsonify({'error': 'Please provide the movie or TV series title.'}), 400
-        logger.info(f"Movie title received: {movie_title}")
+            movie_title = "Untitled Video"
+        logger.info(f"Movie title: {movie_title}")
         
         # Optional creator instructions
         user_instructions = request.form.get('instructions', '').strip()
@@ -126,26 +147,29 @@ def process_video():
         else:
             user_instructions = None
         
-        # Step 1: Generate recap script
-        logger.info("\nStep 1: Generating grounded recap script with Gemini...")
-        recap_script = gemini_analyzer.generate_recap_script(
-            movie_title=movie_title,
-            custom_instructions=user_instructions
-        )
-        script_path = session_output_dir / "recap_script.txt"
+        # Step 1: Get manual script input
+        script_text = request.form.get('script_text', '').strip()
+        if not script_text:
+            logger.error("Script text missing from request")
+            return jsonify({'error': 'Please provide the full script text.'}), 400
+            
+        logger.info(f"Script received: {len(script_text)} chars")
+        script_path = session_output_dir / "script.txt"
         with open(script_path, 'w', encoding='utf-8') as script_file:
-            script_file.write(recap_script)
-        logger.info(f"✓ Recap script saved to: {script_path}")
+            script_file.write(script_text)
+        logger.info(f"✓ Script saved to: {script_path}")
         
         # Step 2: Acquire the source video
         if 'drive_url' in request.form and request.form['drive_url']:
             drive_url = request.form['drive_url']
             logger.info(f"Processing Google Drive URL: {drive_url}")
-            
-            # Download from Google Drive
+
+            # Download from Google Drive (lazy import)
+            from utils.drive_downloader import download_from_drive
+
             video_filename = f"video_{session_id}.mp4"
             video_path = session_dir / video_filename
-            
+
             logger.info("Step 2: Downloading video from Google Drive...")
             downloaded_path = download_from_drive(drive_url, video_path)
             
@@ -178,14 +202,20 @@ def process_video():
             logger.error("No video file or Google Drive URL provided")
             return jsonify({'error': 'Please provide either a video file or Google Drive URL'}), 400
         
-        # Step 3: Align script to video
-        logger.info("\nStep 3: Aligning recap script to the video timeline...")
-        scenes_data = gemini_analyzer.align_script_to_video(
-            video_path=video_path,
-            script_text=recap_script,
+        # Step 3: Split video and align script
+        logger.info("\nStep 3: Splitting video and aligning script...")
+        
+        # Split video into 10-minute chunks
+        video_chunks = video_processor.split_video(video_path, chunk_duration=600)
+        logger.info(f"✓ Video split into {len(video_chunks)} chunks")
+        
+        # Analyze chunks sequentially
+        scenes_data = gemini_analyzer.analyze_video_chunks(
+            video_chunks=video_chunks,
+            script_text=script_text,
             custom_instructions=user_instructions
         )
-        scenes_data['full_script'] = recap_script
+        scenes_data['full_script'] = script_text
         scenes_data['movie_title'] = movie_title
         
         valid_scenes = []
@@ -214,13 +244,19 @@ def process_video():
         scenes_data['scenes'] = valid_scenes
         if not valid_scenes:
             logger.error("Alignment returned no usable segments")
-            return jsonify({'error': 'Unable to align the recap script to the provided video. Please verify the title and video content.'}), 400
+            return jsonify({'error': 'Unable to align the script to the provided video.'}), 400
         if skipped_scenes:
             scenes_data['skipped_scenes'] = skipped_scenes
         logger.info(f"✓ Script alignment complete. Found {len(scenes_data['scenes'])} segments")
         
         # Save scenes data
         scenes_json_path = session_output_dir / "scenes.json"
+        
+        # Robustness: Ensure directory exists (in case it was deleted during processing)
+        if not session_output_dir.exists():
+            logger.warning(f"Output directory missing, recreating: {session_output_dir}")
+            session_output_dir.mkdir(parents=True, exist_ok=True)
+            
         with open(scenes_json_path, 'w', encoding='utf-8') as f:
             json.dump(scenes_data, f, indent=2)
         logger.info(f"✓ Scenes data saved to: {scenes_json_path}")
@@ -265,7 +301,7 @@ def process_video():
             'scenes': scenes_data['scenes'],
             'clips': processed_clips,
             'final_video': str(final_video_path) if final_video_path else None,
-            'full_script': recap_script,
+            'full_script': script_text,
             'movie_title': movie_title,
             'script_file': script_path.name,
             'scenes_file': scenes_json_path.name,
@@ -318,6 +354,36 @@ def download_file(session_id, filename):
         
     except Exception as e:
         logger.error(f"Error downloading file: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/cleanup', methods=['POST'])
+def cleanup_session():
+    """Delete session data"""
+    try:
+        session_id = request.json.get('session_id')
+        if not session_id:
+            return jsonify({'error': 'Session ID required'}), 400
+            
+        logger.info(f"Cleaning up session: {session_id}")
+        
+        import shutil
+        
+        # Directories to clean
+        dirs_to_clean = [
+            config.TEMP_DIR / session_id,
+            config.AUDIO_DIR / session_id,
+            config.OUTPUT_DIR / session_id
+        ]
+        
+        for directory in dirs_to_clean:
+            if directory.exists():
+                shutil.rmtree(directory)
+                logger.info(f"Deleted: {directory}")
+                
+        return jsonify({'success': True, 'message': 'Session data cleaned up'}), 200
+        
+    except Exception as e:
+        logger.error(f"Error cleaning up session: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/status')

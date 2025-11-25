@@ -4,6 +4,8 @@ Gemini AI video analyzer using the new google-genai library
 from google import genai
 from google.genai import types
 import json
+import re
+import difflib
 import time
 import textwrap
 from pathlib import Path
@@ -88,24 +90,6 @@ class GeminiVideoAnalyzer:
             logger.info(f"API version override: {api_version}")
         logger.info(f"Thinking level: {self.thinking_level}")
     
-    def _format_user_instructions(self, custom_instructions):
-        """
-        Format optional user instructions so they can be embedded in prompts safely.
-        """
-        if not custom_instructions:
-            return ""
-        
-        sanitized = custom_instructions.strip()
-        if not sanitized:
-            return ""
-        
-        return (
-            "\nCREATOR DIRECTION:\n"
-            f"{sanitized}\n"
-            "Integrate this intent and tone while staying 100% faithful to the on-screen footage. "
-            "Never invent scenes or dialogue that are not visible/heard.\n"
-        )
-    
     def _time_to_seconds(self, timestamp):
         """Convert a HH:MM:SS or MM:SS timestamp to seconds."""
         if timestamp is None:
@@ -169,6 +153,39 @@ class GeminiVideoAnalyzer:
         
         combined = "\n".join(seg for seg in segments if seg)
         return combined.strip()
+
+    def _extract_json_from_response(self, response_text):
+        """
+        Robustly extract JSON from response text that might contain markdown or conversational text.
+        """
+        if not response_text:
+            raise ValueError("Empty response text")
+
+        # 1. Try direct parsing first
+        try:
+            return json.loads(response_text)
+        except json.JSONDecodeError:
+            pass
+
+        # 2. Try to find markdown JSON block
+        # Look for ```json ... ``` or just ``` ... ```
+        match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except json.JSONDecodeError:
+                pass
+        
+        # 3. Try to find just the first { and last }
+        # This handles cases where there are no code blocks but there is JSON-like content
+        match = re.search(r'(\{.*\})', response_text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except json.JSONDecodeError:
+                pass
+                
+        raise ValueError(f"Could not extract valid JSON from response: {response_text[:100]}...")
     
     def _execute_with_retry(self, func, description):
         """
@@ -193,256 +210,7 @@ class GeminiVideoAnalyzer:
             f"{description} failed after {self.max_retries} attempts due to API connectivity issues. "
             "Please try again once your network is stable."
         ) from last_error
-    
-    def generate_recap_script(self, movie_title, custom_instructions=None):
-        """
-        Generate a long-form movie recap script using Gemini with web grounding enabled.
-        
-        Args:
-            movie_title: Title of the movie or series to recap
-            custom_instructions: Optional stylistic guidance from the user
-        
-        Returns:
-            Recap script text
-        """
-        try:
-            if not movie_title:
-                raise ValueError("Movie title is required to generate a recap script.")
-            
-            logger.info(f"Generating recap script for: {movie_title}")
-            
-            instruction_block = self._format_user_instructions(custom_instructions)
-            
-            # Respect rate limits ahead of the request
-            self._wait_for_rate_limit()
-            
-            script_prompt = textwrap.dedent(f"""
-                You are a seasoned movie script researcher. create a movie recap script for "{movie_title}".
-                The format should use a step-by-step narration of the plot, describing key scenes, characters, and twists, condensing the movie's full storyline into a short video with commentary and insights.
-                Use Google Search to gather accurate information about "{movie_title}" before writing.
-                
-                REQUIREMENTS:
-                • Write a single continuous third-person narrative with no headings or bullet lists.
-                • Have an energetic, descriptive.
-                • Break the plot down into sequential beats, but keep the output as one flowing script.
-                • Do not invent events—ground every plot detail in the actual movie/series.
-                • Keep the pacing engaging with natural sentence transitions.
-                • Ensure the script is at least 2000 words long.
-                • STRICTLY FORBIDDEN: Do not use visual language like "The camera pans", "We see", "The screen opens", or "The shot changes". Write purely as a storyteller describing events, not a camera operator.
-                • Here is an example of what i am looking for "On top of a building, Gabriel watches the city. He's a low-ranking guardian angel, and his duty is to save people from crashing while texting and driving. He appears in the backseat of their cars, and with just a little touch, he makes them stop the vehicle just in time. One day, Gabriel sits behind Arj, an aspiring documentarian who does random jobs to survive. Today, he's frustrated because he's been turned down for another job, and he admits he's close to giving up. After reading the texts, Gabriel touches Arj to make him stop the car, but now he's worried about Arj's mental state. Afterward, Arj does some chores for the app Task Sergeant. First, he goes to a popular bakery that has a very long line outside. He's not there to buy anything for himself. He's being paid by someone else to wait in line for them. After 2 hours of waiting, the clerk announces that there are no buns left. Arj calls his client to explain, but sadly, the client cancels the task anyway. Arj is even more frustrated when he discovers most of the buns were bought by Jeff, a rich guy who's a priority customer."
-                
-                {instruction_block if instruction_block else ''}
-                
-                Return ONLY the final narrative script text with normal paragraph breaks. 
-                Do not add markdown, headings, or commentary outside the story.
-            """).strip()
-            
-            response = self._execute_with_retry(
-                lambda: self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=[script_prompt],
-                    config=types.GenerateContentConfig(
-                        temperature=1.0,
-                        top_p=0.95,
-                        top_k=40,
-                        tools=[types.Tool(google_search=types.GoogleSearch())]
-                    )
-                ),
-                description="recap script generation"
-            )
-            
-            script_text = self._extract_response_text(response)
-            
-            if not script_text:
-                logger.error(f"Recap script response was empty. Raw response object: {response}")
-                raise ValueError("Gemini returned an empty script.")
-            
-            logger.info(f"✓ Recap script generated ({len(script_text)} characters)")
-            logger.debug(f"Recap script preview: {script_text[:400]}...")
-            return script_text
-        
-        except Exception as e:
-            logger.error(f"Error generating recap script: {str(e)}", exc_info=True)
-            raise
-    
-    def align_script_to_video(self, video_path, script_text, custom_instructions=None):
-        """
-        Align a recap script to the uploaded video and produce timestamped segments.
-        
-        Args:
-            video_path: Local path to the video file
-            script_text: Full recap script to align
-            custom_instructions: Optional stylistic guidance
-        
-        Returns:
-            Dictionary with `scenes` array and optional notes.
-        """
-        try:
-            if not script_text:
-                raise ValueError("Cannot align script to video without script text.")
-            
-            logger.info("Uploading video for script alignment...")
-            video_file = self.upload_video(video_path)
-            
-            instruction_block = self._format_user_instructions(custom_instructions)
-            
-            alignment_prompt = textwrap.dedent(f"""
-                You are synchronizing a narrative recap script with the actual footage.
-                Watch the entire video to understand the correct sequence before mapping narration segments.
-                
-                TASK:
-                • Break the script into chronological segments that match what happens on-screen.
-                • For each segment, provide the exact HH:MM:SS start and end timestamps from the video.
-                • Ensure the script lines up with character actions and plot beats visible in that range.
-                • Be sure to do it for the whole movie.
-                • Make sure u use the entire script with the entire video.
-                • CRITICAL: Watch the full movie first and understand it. Match the script with the exact moments they happen in this movie/tv series.
-                • Timestamps provided MUST match perfectly with the time of the original video (e.g., 00:11 to 00:21 must match exactly on the main video).
-                • Create quick, short cuts: aim for clips between 5 seconds and 15 seconds duration.
-                
-                {instruction_block if instruction_block else ''}
-                
-                SCRIPT TO ALIGN (verbatim):
-                \"\"\"{script_text}\"\"\"
-                
-                Output JSON in this exact format:
-                {{
-                  "scenes": [
-                    {{
-                      "scene_number": 1,
-                      "start_time": "HH:MM:SS",
-                      "end_time": "HH:MM:SS",
-                      "duration_seconds": 125.6,
-                      "narration": "Narration text tied to this moment."
-                    }}
-                  ],
-                  "notes": "Optional alignment notes for the editor."
-                }}
-                
-                RULES:
-                • Timecode format must be zero-padded HH:MM:SS (e.g., 00:05:12).
-                • duration_seconds must be a positive float accurate to two decimals.
-                • Ensure scene_number increases sequentially.
-                • Do NOT return markdown, prose, or commentary outside the JSON.
-            """).strip()
-            
-            # Respect rate limits before alignment call
-            self._wait_for_rate_limit()
-            
-            file_uri = getattr(video_file, "uri", None)
-            if not file_uri:
-                logger.error("Uploaded video missing URI reference from Gemini")
-                raise ValueError("Unable to reference uploaded video within Gemini response.")
-            logger.info(f"Using Gemini file reference: {file_uri}")
 
-            video_part = types.Part.from_uri(
-                file_uri=file_uri,
-                mime_type=video_file.mime_type
-            )
-
-            prompt_part = types.Part.from_text(text=alignment_prompt)
-
-            user_content = types.Content(
-                role="user",
-                parts=[video_part, prompt_part]
-            )
-
-            response = self._execute_with_retry(
-                lambda: self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=[user_content],
-                    config=types.GenerateContentConfig(
-                        temperature=0.0,
-                        top_p=0.9,
-                        top_k=40,
-                        media_resolution="MEDIA_RESOLUTION_HIGH"
-                    )
-                ),
-                description="script-to-video alignment"
-            )
-            
-            response_text = self._extract_response_text(response)
-            
-            # Clean potential markdown formatting
-            if response_text.strip().startswith("```"):
-                lines = response_text.strip().splitlines()
-                if lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].strip().startswith("```"):
-                    lines = lines[:-1]
-                response_text = "\n".join(lines).strip()
-            
-            logger.debug(f"Alignment raw response (cleaned): {response_text[:500]}...")
-            
-            if not response_text:
-                logger.error(f"Alignment response was empty. Raw response object: {response}")
-                # Check for safety blocking
-                try:
-                    if response.candidates and response.candidates[0].finish_reason != "STOP":
-                        logger.error(f"Finish reason: {response.candidates[0].finish_reason}")
-                except:
-                    pass
-                raise ValueError("Alignment response was empty or blocked.")
-            
-            try:
-                alignment_data = json.loads(response_text)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON. Raw text: {response_text}")
-                raise
-            
-            if isinstance(alignment_data, list):
-                alignment_data = {"scenes": alignment_data}
-            
-            scenes = alignment_data.get("scenes", [])
-            if not scenes:
-                raise ValueError("No scenes were returned during alignment.")
-            
-            for index, scene in enumerate(scenes, start=1):
-                # Ensure mandatory fields exist
-                scene['scene_number'] = scene.get('scene_number', index)
-                
-                narration_text = scene.get('narration') or scene.get('text') or ""
-                scene['narration'] = narration_text.strip()
-                
-                start_time = scene.get('start_time')
-                end_time = scene.get('end_time')
-                
-                if start_time and isinstance(start_time, str):
-                    scene['start_time'] = start_time.strip()
-                if end_time and isinstance(end_time, str):
-                    scene['end_time'] = end_time.strip()
-                
-                # Calculate duration if missing or invalid
-                duration = scene.get('duration_seconds')
-                if duration in (None, "", 0):
-                    start_seconds = self._time_to_seconds(scene.get('start_time'))
-                    end_seconds = self._time_to_seconds(scene.get('end_time'))
-                    if start_seconds is not None and end_seconds is not None:
-                        computed = max(0.0, end_seconds - start_seconds)
-                        scene['duration_seconds'] = round(computed, 2)
-                else:
-                    try:
-                        scene['duration_seconds'] = round(float(duration), 2)
-                    except Exception:
-                        start_seconds = self._time_to_seconds(scene.get('start_time'))
-                        end_seconds = self._time_to_seconds(scene.get('end_time'))
-                        if start_seconds is not None and end_seconds is not None:
-                            scene['duration_seconds'] = round(max(0.0, end_seconds - start_seconds), 2)
-                
-                # Attach original script excerpt for reference if missing
-                if 'script_excerpt' not in scene:
-                    scene['script_excerpt'] = scene['narration']
-            
-            logger.info(f"✓ Script alignment complete with {len(scenes)} segments")
-            return alignment_data
-        
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse alignment JSON: {str(e)}", exc_info=True)
-            raise
-        except Exception as e:
-            logger.error(f"Error aligning script to video: {str(e)}", exc_info=True)
-            raise
-    
     def upload_video(self, video_path):
         """
         Upload video to Gemini
@@ -486,46 +254,281 @@ class GeminiVideoAnalyzer:
         except Exception as e:
             logger.error(f"Error uploading video to Gemini: {str(e)}", exc_info=True)
             raise
-    
 
-    def process_video(self, video_path, movie_title=None, script_text=None, custom_instructions=None):
+    def _find_script_split_point(self, full_text, search_text):
         """
-        Complete workflow: generate recap (if needed) and align it to the video.
+        Find the index in full_text where search_text ends, using fuzzy matching if needed.
+        Returns -1 if not found.
+        """
+        if not full_text or not search_text:
+            return -1
+            
+        # 1. Try exact match first (normalized)
+        def normalize(text):
+            return " ".join(text.split())
+            
+        search_norm = normalize(search_text)
+        full_norm = normalize(full_text)
+        
+        try:
+            # Try finding the exact normalized string
+            norm_index = full_norm.rindex(search_norm)
+            # Map back to original text is hard, so we fall back to a simpler exact search in original text
+            # if the normalized one works, it gives us confidence it's there.
+        except ValueError:
+            pass
+
+        # Try exact search in original text ignoring whitespace differences
+        # We'll search for the last 20 chars of the search text
+        suffix_len = min(len(search_text), 50)
+        suffix = search_text[-suffix_len:]
+        
+        # Simple exact search for suffix
+        idx = full_text.rfind(suffix)
+        if idx != -1:
+            return idx + len(suffix)
+
+        # 2. Fuzzy Matching
+        # If exact match fails, use difflib to find the best matching block
+        logger.info("Exact match failed, trying fuzzy matching...")
+        
+        # We only need to search in the first part of the script if we assume sequential processing,
+        # but here we search the whole thing. To optimize, we could limit scope.
+        
+        matcher = difflib.SequenceMatcher(None, full_text, search_text)
+        match = matcher.find_longest_match(0, len(full_text), 0, len(search_text))
+        
+        # Check if the match is "good enough"
+        # We expect a significant portion of the search_text to match
+        if match.size > len(search_text) * 0.6:  # Match at least 60%
+            # The match gives us the start index in full_text. 
+            # We want the END of the matching segment.
+            # However, the match might be in the middle of search_text.
+            
+            # Let's try to align the END of search_text
+            end_in_full = match.a + match.size
+            
+            # If we matched the END of search_text, we are good
+            if match.b + match.size == len(search_text):
+                return end_in_full
+            
+            # If we matched the START or MIDDLE, we need to project where the end would be
+            # This is risky if the texts diverge. 
+            # Instead, let's assume the match we found is the "anchor" and we cut there.
+            # But better: let's try to find the match for the SUFFIX of search_text
+            
+            suffix_matcher = difflib.SequenceMatcher(None, full_text, suffix)
+            suffix_match = suffix_matcher.find_longest_match(0, len(full_text), 0, len(suffix))
+            
+            if suffix_match.size > len(suffix) * 0.6:
+                return suffix_match.a + suffix_match.size
+                
+            # Fallback: use the main match end
+            return end_in_full
+            
+        return -1
+
+    def analyze_video_chunks(self, video_chunks, script_text, custom_instructions=None):
+        """
+        Analyze video chunks sequentially using independent sessions with dynamic script trimming.
         
         Args:
-            video_path: Path to video file
-            movie_title: Title of the movie/series (required if script_text is None)
-            script_text: Optional pre-generated script to align
-            custom_instructions: Optional creator guidance
+            video_chunks: List of paths to video chunk files
+            script_text: Full script text to align
+            custom_instructions: Optional user instructions
             
         Returns:
-            Dictionary containing full script, scenes, and optional notes
+            Aggregated scenes data
         """
         try:
-            logger.info(f"Starting complete video processing for: {video_path}")
-            if custom_instructions:
-                logger.info("Creator instructions supplied; embedding them in prompts.")
+            if not video_chunks:
+                raise ValueError("No video chunks provided for analysis.")
+            if not script_text:
+                raise ValueError("Script text is required.")
+                
+            logger.info(f"Starting sequential analysis of {len(video_chunks)} chunks with dynamic script trimming...")
             
-            if script_text is None:
-                if not movie_title:
-                    raise ValueError("movie_title is required when script_text is not provided.")
-                script_text = self.generate_recap_script(movie_title, custom_instructions=custom_instructions)
-            else:
-                logger.info("Using pre-generated recap script for alignment.")
+            all_scenes = []
+            remaining_script = script_text
             
-            alignment_data = self.align_script_to_video(
-                video_path=video_path,
-                script_text=script_text,
-                custom_instructions=custom_instructions
-            )
+            for i, chunk_path in enumerate(video_chunks):
+                chunk_num = i + 1
+                logger.info(f"\n--- Processing Chunk {chunk_num}/{len(video_chunks)}: {chunk_path.name} ---")
+                logger.info(f"Remaining script length: {len(remaining_script)} chars")
+                
+                if len(remaining_script.strip()) < 10:
+                    logger.warning("Remaining script is too short, skipping remaining chunks.")
+                    break
+                
+                # Create a FRESH chat session for each chunk to avoid memory pollution
+                # We want each chunk to be treated independently with just the remaining script
+                
+                max_chunk_retries = 3
+                chunk_retry_count = 0
+                chunk_success = False
+                
+                while chunk_retry_count < max_chunk_retries and not chunk_success:
+                    if chunk_retry_count > 0:
+                        logger.info(f"Retrying chunk {chunk_num} (Attempt {chunk_retry_count + 1}/{max_chunk_retries})...")
+                        time.sleep(5) # Wait a bit before retry
+                    
+                    try:
+                        chat = self.client.chats.create(model=self.model_name)
+                        
+                        # Upload chunk
+                        self._wait_for_rate_limit()
+                        # If we already uploaded, we could reuse, but let's be safe and re-upload or just re-use if we had a way to check
+                        # For simplicity, we re-upload or rely on the fact that upload_video might handle it (it doesn't cache currently)
+                        # To avoid re-uploading every retry, we could move upload outside loop, but if upload failed, we need it inside.
+                        # Let's assume upload is stable and focus on analysis retry.
+                        
+                        video_file = self.upload_video(chunk_path)
+                        
+                        file_uri = getattr(video_file, "uri", None)
+                        if not file_uri:
+                            raise ValueError(f"Failed to get URI for chunk {chunk_num}")
+                        
+                        video_part = types.Part.from_uri(
+                            file_uri=file_uri,
+                            mime_type=video_file.mime_type
+                        )
+                        
+                        # Construct prompt with the REMAINING script
+                        prompt_text = textwrap.dedent(f"""
+                            I will upload several cut versions of 1 movie each 10min long so its easy for you too understand, and i want you too watch each part of the movie and understand it end too end then match the script to the movie with corresponding timestamps. note use only the exact words in the script nothing out of it and also always end exactly the way the script ends dont add no continuation symbols or marks always end each section exactly the way it is in the script and also i want ot to be quick cuts about 5secs too 20secs per clip and also each narration per clip should be at least 10 words long and each clip should be not be a continuation of the previous meaning if scene 1 ends at 1:25 for example, scene 2 should not start from 1:25 or 1:26, there should be at least a 10sec difference. Output JSON in this exact format:
+                            {{
+                              "scenes": [
+                                {{
+                                  "scene_number": 1,
+                                  "start_time": "MM:SS",
+                                  "end_time": "MM:SS",
+                                  "duration_seconds": 12.5,
+                                  "narration": "Exact text from script"
+                                }}
+                              ]
+                            }}
+                            
+                            SCRIPT:
+                            \"\"\"{remaining_script}\"\"\"
+                        """).strip()
+                        
+                        if custom_instructions:
+                            prompt_text += f"\n\nADDITIONAL INSTRUCTIONS:\n{custom_instructions}"
+                        
+                        prompt_part = types.Part.from_text(text=prompt_text)
+                        
+                        # Send message
+                        logger.info(f"Sending request to Gemini for chunk {chunk_num}...")
+                        response = self._execute_with_retry(
+                            lambda: chat.send_message(
+                                message=[video_part, prompt_part],
+                                config=types.GenerateContentConfig(
+                                    temperature=0.0,
+                                    top_p=0.9,
+                                    top_k=40,
+                                    media_resolution="MEDIA_RESOLUTION_HIGH"
+                                )
+                            ),
+                            description=f"analysis of chunk {chunk_num}"
+                        )
+                        
+                        response_text = self._extract_response_text(response)
+                        
+                        # Retry if response is empty
+                        if not response_text:
+                            logger.warning(f"Empty response for chunk {chunk_num}, retrying...")
+                            chunk_retry_count += 1
+                            continue
+                        
+                        # Parse JSON
+                        try:
+                            chunk_data = self._extract_json_from_response(response_text)
+                            scenes = chunk_data.get("scenes", [])
+                            
+                            if not scenes:
+                                logger.warning(f"No scenes returned for chunk {chunk_num}")
+                                chunk_retry_count += 1
+                                continue
+                                
+                            # Adjust timestamps for chunk offset
+                            chunk_offset_seconds = i * 600  # 10 minutes per chunk
+                            
+                            for scene in scenes:
+                                # Parse relative times
+                                start_rel = self._time_to_seconds(scene.get('start_time'))
+                                end_rel = self._time_to_seconds(scene.get('end_time'))
+                                
+                                if start_rel is not None:
+                                    start_abs = start_rel + chunk_offset_seconds
+                                    # Format back to HH:MM:SS
+                                    h = int(start_abs // 3600)
+                                    m = int((start_abs % 3600) // 60)
+                                    s = start_abs % 60
+                                    scene['start_time'] = f"{h:02d}:{m:02d}:{s:06.3f}"
+                                    
+                                if end_rel is not None:
+                                    end_abs = end_rel + chunk_offset_seconds
+                                    h = int(end_abs // 3600)
+                                    m = int((end_abs % 3600) // 60)
+                                    s = end_abs % 60
+                                    scene['end_time'] = f"{h:02d}:{m:02d}:{s:06.3f}"
+                                    
+                                # Recalculate duration
+                                if start_rel is not None and end_rel is not None:
+                                    scene['duration_seconds'] = round(end_rel - start_rel, 2)
+                                    
+                                all_scenes.append(scene)
+                                
+                            logger.info(f"✓ Chunk {chunk_num} processed: {len(scenes)} scenes found")
+                            
+                            # --- DYNAMIC SCRIPT TRIMMING ---
+                            # Find the last narration in this chunk to know where to cut the script
+                            last_scene = scenes[-1]
+                            last_narration = last_scene.get('narration', '').strip()
+                            
+                            if last_narration:
+                                logger.info(f"Looking for split point after: '{last_narration[:50]}...'")
+                                split_index = self._find_script_split_point(remaining_script, last_narration)
+                                
+                                if split_index != -1:
+                                    # Cut the script from this point onward
+                                    prev_len = len(remaining_script)
+                                    remaining_script = remaining_script[split_index:].strip()
+                                    new_len = len(remaining_script)
+                                    logger.info(f"✓ Script trimmed. Cut {prev_len - new_len} chars. New length: {new_len}")
+                                    chunk_success = True # Success!
+                                else:
+                                    logger.warning("Could not find exact match for last narration to trim script.")
+                                    # RETRY LOGIC for script splitting failure
+                                    if chunk_retry_count < max_chunk_retries - 1:
+                                        logger.warning("Retrying chunk analysis to get better script alignment...")
+                                        chunk_retry_count += 1
+                                        # Remove scenes from this failed attempt
+                                        all_scenes = all_scenes[:-len(scenes)]
+                                        continue
+                                    else:
+                                        logger.warning("Max retries reached. Using full remaining script for next chunk.")
+                                        chunk_success = True # Accept it even if split failed, to move on
+                            else:
+                                logger.warning("Last scene had no narration, cannot trim script.")
+                                chunk_success = True
+                            
+                        except json.JSONDecodeError:
+                            logger.error(f"Failed to parse JSON for chunk {chunk_num}. Response: {response_text}")
+                            chunk_retry_count += 1
+                            continue
+                            
+                    except Exception as e:
+                        logger.error(f"Error processing chunk {chunk_num}: {str(e)}")
+                        chunk_retry_count += 1
+                        continue
             
-            alignment_data['full_script'] = script_text
-            if movie_title:
-                alignment_data['movie_title'] = movie_title
-            
-            logger.info("Video processing completed successfully")
-            return alignment_data
+            # Renumber scenes sequentially
+            for idx, scene in enumerate(all_scenes, 1):
+                scene['scene_number'] = idx
+                
+            return {"scenes": all_scenes}
             
         except Exception as e:
-            logger.error(f"Error in video processing workflow: {str(e)}", exc_info=True)
+            logger.error(f"Error in sequential video analysis: {str(e)}", exc_info=True)
             raise

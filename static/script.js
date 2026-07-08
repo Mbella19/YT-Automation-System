@@ -658,14 +658,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const videoFile = videoInput && videoInput.files ? videoInput.files[0] : null;
             const driveUrl = driveUrlInput ? driveUrlInput.value.trim() : '';
-            const instructions = instructionsInput ? instructionsInput.value.trim() : '';
+            const scriptText = instructionsInput ? instructionsInput.value.trim() : '';
             const movieTitle = movieTitleInput ? movieTitleInput.value.trim() : '';
-
-            // Movie title is no longer required
-            // if (!movieTitle) {
-            //    showUploadAlert('Please provide the movie or series title.');
-            //    return;
-            // }
 
             if (!videoFile && !driveUrl) {
                 showUploadAlert('Please upload a video or provide a Google Drive link.');
@@ -685,15 +679,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (driveUrl) {
                 formData.append('drive_url', driveUrl);
             }
-            if (instructions) {
-                formData.append('instructions', instructions);
-            }
-            // Script text is now the main input
-            const scriptText = instructionsInput ? instructionsInput.value.trim() : '';
-            if (!scriptText) {
-                showUploadAlert('Please paste the script text.');
-                return;
-            }
+            // Script is OPTIONAL now. If left blank, the backend generates the
+            // recap from the video automatically (autonomous mode). We send it as
+            // script_text ONLY (previously it was also sent as `instructions`,
+            // which double-injected the whole script into the prompt).
             formData.append('script_text', scriptText);
             formData.append('movie_title', movieTitle);
             formData.append('session_id', sessionId);
@@ -706,12 +695,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 sessionId,
             });
 
-            setStage('Generating recap script');
-            updateProgress(5, 'Generating recap script with Gemini…');
+            const autoMode = !scriptText;
+            setStage(autoMode ? 'Generating recap from video' : 'Aligning recap to video');
+            updateProgress(5, autoMode
+                ? 'No script pasted — Gemini will write the recap from the video…'
+                : 'Preparing to align your script to the video…');
 
             try {
-                updateProgress(20, 'Preparing video for alignment…');
-                setStage('Aligning recap to video');
+                updateProgress(20, autoMode ? 'Analyzing video and writing narration…' : 'Preparing video for alignment…');
+                setStage(autoMode ? 'Writing recap' : 'Aligning recap to video');
 
                 const response = await fetch('/api/process', {
                     method: 'POST',

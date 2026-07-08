@@ -223,22 +223,26 @@ class VideoProcessor:
             logger.error(f"Error splitting video: {str(e)}", exc_info=True)
             raise
 
-    def extract_and_process_clip(self, input_video, start_time, end_time, 
-                                audio_path, output_path, start_delay_ms=250):
+    def extract_and_process_clip(self, input_video, start_time, end_time,
+                                audio_path, output_path, start_delay_ms=250,
+                                use_audio_timing=True):
         """
-        Extract video clip and overlay narration audio with perfect synchronization
-        
-        NEW APPROACH: Video duration is adapted to match audio duration exactly,
-        preventing sync issues from mismatched lengths.
-        
+        Extract video clip and overlay narration audio with synchronization.
+
+        When use_audio_timing is True the clip length follows the narration length
+        (so narration is never cut off); otherwise it uses the scene's timestamp
+        duration. Any start delay is ADDED to the duration so the tail of the
+        narration is not truncated.
+
         Args:
             input_video: Path to input video file
             start_time: Start timestamp (MM:SS or HH:MM:SS)
             end_time: End timestamp (MM:SS or HH:MM:SS) - used as target
             audio_path: Path to narration audio file
             output_path: Path for output clip
-            start_delay_ms: Optional delay in milliseconds before audio starts (default: 250ms)
-            
+            start_delay_ms: Optional delay in milliseconds before audio starts
+            use_audio_timing: If True, clip length = audio length; else timestamp length
+
         Returns:
             Path to processed clip
         """
@@ -270,40 +274,45 @@ class VideoProcessor:
             
             output_path = Path(output_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # SOLUTION: Use AUDIO duration as the final clip duration
-            # This ensures narration is never cut off and video adapts to audio
-            final_duration = audio_duration
-            
-            # Build FFmpeg command with audio-based timing
+
+            # Base clip length: follow narration (audio) length, or the scene's
+            # timestamp length when audio-timing is disabled.
+            base_duration = audio_duration if use_audio_timing else target_duration
+            delay_seconds = max(start_delay_ms, 0) / 1000.0
+            # Add the delay so a fronted silence pad does not truncate the narration tail.
+            final_duration = base_duration + delay_seconds
+
+            if final_duration <= 0:
+                raise ValueError(f"Computed non-positive clip duration ({final_duration:.3f}s)")
+
+            # Build FFmpeg command.
             cmd = [
                 self.ffmpeg_path,
                 '-y',  # Overwrite output file
                 '-ss', str(start_seconds),  # Start time in video
                 '-i', str(input_video),  # Input video
                 '-i', str(audio_path),  # Input audio (narration)
-                '-t', str(final_duration),  # Duration = AUDIO DURATION
-                '-map', '0:v',  # Map video from first input
-                '-map', '1:a',  # Map audio from second input (narration)
+                '-t', str(final_duration),  # Explicit duration (no -shortest)
+                '-map', '0:v:0',  # Map first video stream from input 0
+                '-map', '1:a:0',  # Map narration audio from input 1
                 '-c:v', 'libx264',  # Video codec
                 '-preset', 'medium',  # Encoding preset
                 '-crf', '23',  # Quality (18-28, lower = better)
                 '-c:a', 'aac',  # Audio codec
                 '-b:a', '192k',  # Audio bitrate
-                # NO -shortest flag! Duration explicitly set to audio length
                 str(output_path)
             ]
-            
-            # Optional: Add slight delay at start for better perception
+
+            # Optional: pad silence at the start for better perception.
             if start_delay_ms > 0:
-                logger.debug(f"Adding {start_delay_ms}ms audio delay for better sync perception")
-                # Insert audio filter before codec settings
+                logger.debug(f"Adding {start_delay_ms}ms audio delay (clip extended to preserve tail)")
                 delay_filter_idx = cmd.index('-map') + 4  # After both -map commands
                 cmd.insert(delay_filter_idx, '-filter:a')
                 cmd.insert(delay_filter_idx + 1, f'adelay={start_delay_ms}|{start_delay_ms}')
-            
+
             logger.debug(f"FFmpeg command: {' '.join(cmd)}")
-            logger.info("🎬 Using AUDIO-BASED timing for perfect synchronization")
+            logger.info(f"🎬 Clip timing: {'AUDIO-based' if use_audio_timing else 'timestamp-based'} "
+                        f"({final_duration:.2f}s)")
             
             # Run FFmpeg
             result = subprocess.run(
@@ -340,17 +349,19 @@ class VideoProcessor:
             logger.error(f"Error processing clip: {str(e)}", exc_info=True)
             raise
     
-    def process_all_clips(self, input_video, scenes_data, audio_files, output_dir, start_delay_ms=250):
+    def process_all_clips(self, input_video, scenes_data, audio_files, output_dir,
+                          start_delay_ms=250, use_audio_timing=True):
         """
-        Process all clips from scenes data with audio-based synchronization
-        
+        Process all clips from scenes data with narration synchronization.
+
         Args:
             input_video: Path to input video
             scenes_data: Dictionary with scenes information
             audio_files: List of audio file information
             output_dir: Directory to save processed clips
-            start_delay_ms: Milliseconds of delay before audio starts (default: 250ms)
-            
+            start_delay_ms: Milliseconds of delay before audio starts
+            use_audio_timing: If True, clip length follows narration length
+
         Returns:
             List of processed clip paths
         """
@@ -378,14 +389,15 @@ class VideoProcessor:
                 output_filename = f"clip_{scene_num:03d}.mp4"
                 output_path = output_dir / output_filename
                 
-                # Process clip with audio-based timing
+                # Process clip
                 clip_path = self.extract_and_process_clip(
                     input_video=input_video,
                     start_time=scene['start_time'],
                     end_time=scene['end_time'],
                     audio_path=audio_info['audio_path'],
                     output_path=output_path,
-                    start_delay_ms=start_delay_ms
+                    start_delay_ms=start_delay_ms,
+                    use_audio_timing=use_audio_timing
                 )
                 
                 processed_clips.append({

@@ -8,14 +8,34 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+
+def _env_bool(name, default):
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name, default):
+    val = os.getenv(name)
+    if val is None or not str(val).strip():
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+
 # API Keys - Load from environment variables
+# The new-format AI Studio keys ("AQ.*") authenticate the Gemini API for BOTH
+# analysis and native text-to-speech, so a single key covers everything.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_TTS_API_KEY = os.getenv("GEMINI_TTS_API_KEY")
+GEMINI_TTS_API_KEY = os.getenv("GEMINI_TTS_API_KEY") or GEMINI_API_KEY
 
 # Gemini model and client configuration
-GEMINI_MODEL_NAME = "gemini-3-pro-preview"
-GEMINI_API_VERSION = "v1beta"
-GEMINI_THINKING_LEVEL = "high"
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-3.5-flash")
+GEMINI_API_VERSION = os.getenv("GEMINI_API_VERSION", "v1beta")
+GEMINI_THINKING_LEVEL = os.getenv("GEMINI_THINKING_LEVEL", "high")
 
 # Directories
 BASE_DIR = Path(__file__).parent
@@ -31,24 +51,39 @@ for directory in [UPLOAD_DIR, OUTPUT_DIR, TEMP_DIR, AUDIO_DIR]:
 # FFmpeg settings
 FFMPEG_PATH = "ffmpeg"  # Assumes ffmpeg is in PATH
 
-# Video processing settings
-CLIP_DURATION_MIN = 15  # seconds
-CLIP_DURATION_MAX = 40  # seconds
+# Clip length guidance (fed into the analysis/generation prompt)
+CLIP_DURATION_MIN = _env_int("CLIP_DURATION_MIN", 5)   # seconds
+CLIP_DURATION_MAX = _env_int("CLIP_DURATION_MAX", 20)  # seconds
 
-# Gemini TTS settings
-GEMINI_TTS_MODEL = "gemini-2.5-flash-tts" # User requested model
+# Gemini native TTS settings (uses the generativelanguage API, not Cloud TTS)
+GEMINI_TTS_MODEL = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+GEMINI_TTS_VOICE = os.getenv("GEMINI_TTS_VOICE", "Kore")  # Prebuilt Gemini voice
 
-# Gemini settings
-GEMINI_TEMPERATURE = 0.0  # High creativity for long-form recap generation
-GEMINI_TIMESTAMP_TEMPERATURE = 0.0  # Alignment call temperature
-GEMINI_TWO_PASS_ANALYSIS = True  # Use two-pass analysis for better content sync (recommended but costs more)
-GEMINI_API_DELAY_SECONDS = 60  # Delay between API calls (120s = 2 mins for free tier, 0 for paid tier)
-GEMINI_API_MAX_RETRIES = 3  # Retry Gemini requests on transient failures
-GEMINI_API_RETRY_BACKOFF_SECONDS = 5  # Base delay between retry attempts
+# Gemini generation settings
+# NOTE: alignment/timestamping wants deterministic output, so temperatures are low.
+GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0.7"))  # Narration/script generation
+GEMINI_TIMESTAMP_TEMPERATURE = float(os.getenv("GEMINI_TIMESTAMP_TEMPERATURE", "0.0"))  # Alignment
+
+# Autonomy: when no script is supplied, generate the recap directly from the video.
+AUTO_GENERATE_SCRIPT = _env_bool("AUTO_GENERATE_SCRIPT", True)
+
+# Rate limiting between Gemini API calls.
+#   Free tier historically needs ~60s; paid/flash tiers can use a small value or 0.
+#   The retry logic now also handles 429s, so a modest default is safe.
+GEMINI_API_DELAY_SECONDS = _env_int("GEMINI_API_DELAY_SECONDS", 6)
+GEMINI_API_MAX_RETRIES = _env_int("GEMINI_API_MAX_RETRIES", 3)
+GEMINI_API_RETRY_BACKOFF_SECONDS = _env_int("GEMINI_API_RETRY_BACKOFF_SECONDS", 5)
 
 # Video processing synchronization settings
-AUDIO_START_DELAY_MS = 0  # Milliseconds of silence before narration starts (helps with perception)
-USE_AUDIO_BASED_TIMING = True  # Use audio duration to determine clip length (recommended for perfect sync)
+AUDIO_START_DELAY_MS = _env_int("AUDIO_START_DELAY_MS", 0)  # Silence before narration starts
+USE_AUDIO_BASED_TIMING = _env_bool("USE_AUDIO_BASED_TIMING", True)  # Clip length follows narration length
+
+# Server settings
+FLASK_HOST = os.getenv("FLASK_HOST", "127.0.0.1")
+FLASK_PORT = _env_int("FLASK_PORT", 5001)
+FLASK_DEBUG = _env_bool("FLASK_DEBUG", False)
+MAX_UPLOAD_MB = _env_int("MAX_UPLOAD_MB", 2048)  # Upload cap in MB (None-like: set 0 to disable)
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")  # Comma-separated origins, or "*"
 
 # Logging
 LOG_FILE = BASE_DIR / "automation.log"

@@ -6,14 +6,16 @@ from flask import (
     render_template,
     request,
     jsonify,
-    send_file,
+    send_from_directory,
     Response,
     stream_with_context,
 )
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import NotFound
 import json
 import queue
+import shutil
 import traceback
 from datetime import datetime
 
@@ -29,11 +31,21 @@ import config
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app)
-app.config['MAX_CONTENT_LENGTH'] = None  # Disable max file size limit
+
+# Restrict CORS to configured origins (default "*" for local use).
+_cors_origins = [o.strip() for o in (config.CORS_ORIGINS or "*").split(",") if o.strip()]
+CORS(app, resources={r"/api/*": {"origins": _cors_origins or "*"}})
+
+# Enforce an upload size cap (0/None disables). Prevents unbounded-upload DoS.
+if config.MAX_UPLOAD_MB and config.MAX_UPLOAD_MB > 0:
+    app.config['MAX_CONTENT_LENGTH'] = config.MAX_UPLOAD_MB * 1024 * 1024
 
 # Setup logger
 logger = setup_logger(log_file=config.LOG_FILE)
+
+# Fail fast with a clear message if the API key is missing.
+if not config.GEMINI_API_KEY:
+    logger.warning("GEMINI_API_KEY is not set — copy .env.example to .env and add your key.")
 
 # Lazy-loaded services (initialized on first request for faster startup)
 _services = {
@@ -62,16 +74,22 @@ def _get_services():
             retry_backoff_seconds=config.GEMINI_API_RETRY_BACKOFF_SECONDS,
             model_name=config.GEMINI_MODEL_NAME,
             api_version=config.GEMINI_API_VERSION,
-            thinking_level=config.GEMINI_THINKING_LEVEL
+            thinking_level=config.GEMINI_THINKING_LEVEL,
+            clip_min=config.CLIP_DURATION_MIN,
+            clip_max=config.CLIP_DURATION_MAX,
         )
         _services['gemini_tts'] = GeminiTTS(
             api_key=config.GEMINI_TTS_API_KEY,
-            model_name=config.GEMINI_TTS_MODEL
+            model_name=config.GEMINI_TTS_MODEL,
+            voice_name=config.GEMINI_TTS_VOICE,
+            api_version=config.GEMINI_API_VERSION,
         )
         _services['video_processor'] = VideoProcessor(config.FFMPEG_PATH)
         _services['initialized'] = True
 
-        logger.info(f"Two-pass analysis: {'ENABLED' if config.GEMINI_TWO_PASS_ANALYSIS else 'DISABLED'}")
+        logger.info(f"Model: {config.GEMINI_MODEL_NAME} (thinking: {config.GEMINI_THINKING_LEVEL})")
+        logger.info(f"Auto-generate script when none provided: "
+                    f"{'ENABLED' if config.AUTO_GENERATE_SCRIPT else 'DISABLED'}")
         logger.info(f"Gemini API rate limit: {config.GEMINI_API_DELAY_SECONDS}s delay between calls")
         logger.info(f"Audio-based timing: {'ENABLED' if config.USE_AUDIO_BASED_TIMING else 'DISABLED'}")
         logger.info(f"Audio start delay: {config.AUDIO_START_DELAY_MS}ms")
@@ -147,17 +165,17 @@ def process_video():
         else:
             user_instructions = None
         
-        # Step 1: Get manual script input
+        # Step 1: Get script input (optional — autonomous mode generates it).
         script_text = request.form.get('script_text', '').strip()
-        if not script_text:
-            logger.error("Script text missing from request")
+        auto_generate = not script_text
+        if auto_generate and not config.AUTO_GENERATE_SCRIPT:
+            logger.error("Script text missing and auto-generation disabled")
             return jsonify({'error': 'Please provide the full script text.'}), 400
-            
-        logger.info(f"Script received: {len(script_text)} chars")
-        script_path = session_output_dir / "script.txt"
-        with open(script_path, 'w', encoding='utf-8') as script_file:
-            script_file.write(script_text)
-        logger.info(f"✓ Script saved to: {script_path}")
+
+        if auto_generate:
+            logger.info("No script provided — will auto-generate the recap from the video.")
+        else:
+            logger.info(f"Script received: {len(script_text)} chars")
         
         # Step 2: Acquire the source video
         if 'drive_url' in request.form and request.form['drive_url']:
@@ -202,21 +220,39 @@ def process_video():
             logger.error("No video file or Google Drive URL provided")
             return jsonify({'error': 'Please provide either a video file or Google Drive URL'}), 400
         
-        # Step 3: Split video and align script
-        logger.info("\nStep 3: Splitting video and aligning script...")
-        
+        # Step 3: Split video, then either ALIGN a provided script or GENERATE one.
+        logger.info("\nStep 3: Splitting video and building the recap...")
+
+        chunk_seconds = 600
         # Split video into 10-minute chunks
-        video_chunks = video_processor.split_video(video_path, chunk_duration=600)
+        video_chunks = video_processor.split_video(video_path, chunk_duration=chunk_seconds)
         logger.info(f"✓ Video split into {len(video_chunks)} chunks")
-        
-        # Analyze chunks sequentially
-        scenes_data = gemini_analyzer.analyze_video_chunks(
-            video_chunks=video_chunks,
-            script_text=script_text,
-            custom_instructions=user_instructions
-        )
-        scenes_data['full_script'] = script_text
+
+        if auto_generate:
+            logger.info("Autonomous mode: generating the recap script from the video...")
+            scenes_data = gemini_analyzer.generate_scenes_from_video(
+                video_chunks=video_chunks,
+                custom_instructions=user_instructions,
+                chunk_seconds=chunk_seconds,
+            )
+            # The generated narration becomes the script.
+            script_text = scenes_data.get('full_script', '') or script_text
+        else:
+            scenes_data = gemini_analyzer.analyze_video_chunks(
+                video_chunks=video_chunks,
+                script_text=script_text,
+                custom_instructions=user_instructions,
+                chunk_seconds=chunk_seconds,
+            )
+            scenes_data['full_script'] = script_text
+
         scenes_data['movie_title'] = movie_title
+
+        # Persist the final script (provided or generated) for download.
+        script_path = session_output_dir / "script.txt"
+        with open(script_path, 'w', encoding='utf-8') as script_file:
+            script_file.write(script_text or '')
+        logger.info(f"✓ Script saved to: {script_path}")
         
         valid_scenes = []
         skipped_scenes = []
@@ -273,7 +309,8 @@ def process_video():
             scenes_data=scenes_data,
             audio_files=audio_files,
             output_dir=session_output_dir,
-            start_delay_ms=config.AUDIO_START_DELAY_MS
+            start_delay_ms=config.AUDIO_START_DELAY_MS,
+            use_audio_timing=config.USE_AUDIO_BASED_TIMING,
         )
         logger.info(f"✓ Processed {len(processed_clips)} video clips")
         
@@ -288,7 +325,16 @@ def process_video():
         except Exception as e:
             logger.warning(f"Could not concatenate clips: {str(e)}")
             final_video_path = None
-        
+
+        # Free disk: remove the source video + chunks now that clips are rendered.
+        # (Outputs and audio are kept for download; /api/cleanup removes those later.)
+        try:
+            if session_dir.exists():
+                shutil.rmtree(session_dir)
+                logger.info(f"Cleaned up temp source/chunks: {session_dir}")
+        except Exception as e:
+            logger.warning(f"Could not clean temp dir {session_dir}: {str(e)}")
+
         logger.info("\n" + "=" * 80)
         logger.info("VIDEO PROCESSING COMPLETED SUCCESSFULLY")
         logger.info("=" * 80)
@@ -341,47 +387,49 @@ def process_video():
 
 @app.route('/api/download/<session_id>/<filename>')
 def download_file(session_id, filename):
-    """Download a processed file"""
+    """Download a processed file (path-traversal safe)."""
     try:
-        file_path = config.OUTPUT_DIR / session_id / filename
-        
-        if not file_path.exists():
-            logger.error(f"File not found: {file_path}")
-            return jsonify({'error': 'File not found'}), 404
-        
-        logger.info(f"Serving file: {file_path}")
-        return send_file(file_path, as_attachment=True)
-        
+        # Sanitize the session id to a single directory name; never allow separators.
+        safe_session = secure_filename(session_id)
+        session_dir = (config.OUTPUT_DIR / safe_session).resolve()
+
+        # send_from_directory rejects filenames that escape the directory.
+        logger.info(f"Serving file: {safe_session}/{filename}")
+        return send_from_directory(session_dir, filename, as_attachment=True)
+
+    except NotFound:
+        logger.error(f"File not found: {session_id}/{filename}")
+        return jsonify({'error': 'File not found'}), 404
     except Exception as e:
         logger.error(f"Error downloading file: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/cleanup', methods=['POST'])
 def cleanup_session():
-    """Delete session data"""
+    """Delete session data (path-traversal safe)."""
     try:
-        session_id = request.json.get('session_id')
-        if not session_id:
+        session_id = (request.json or {}).get('session_id') or ''
+        # Reduce to a single safe directory name: strips slashes, '..', and
+        # absolute paths. Without this, a crafted session_id could rmtree
+        # arbitrary directories (e.g. "../../" or "/Users/...").
+        safe_session = secure_filename(str(session_id))
+        if not safe_session:
             return jsonify({'error': 'Session ID required'}), 400
-            
-        logger.info(f"Cleaning up session: {session_id}")
-        
-        import shutil
-        
-        # Directories to clean
-        dirs_to_clean = [
-            config.TEMP_DIR / session_id,
-            config.AUDIO_DIR / session_id,
-            config.OUTPUT_DIR / session_id
-        ]
-        
-        for directory in dirs_to_clean:
+
+        logger.info(f"Cleaning up session: {safe_session}")
+
+        base_dirs = [config.TEMP_DIR, config.AUDIO_DIR, config.OUTPUT_DIR]
+        for base in base_dirs:
+            directory = (base / safe_session).resolve()
+            if directory.parent != base.resolve():
+                logger.warning(f"Refusing to delete outside base dir: {directory}")
+                continue
             if directory.exists():
                 shutil.rmtree(directory)
                 logger.info(f"Deleted: {directory}")
-                
+
         return jsonify({'success': True, 'message': 'Session data cleaned up'}), 200
-        
+
     except Exception as e:
         logger.error(f"Error cleaning up session: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
@@ -392,8 +440,9 @@ def status():
     return jsonify({
         'status': 'online',
         'services': {
-            'gemini': 'configured',
-            'deepgram': 'removed',
+            'gemini_model': config.GEMINI_MODEL_NAME,
+            'gemini_tts': config.GEMINI_TTS_MODEL,
+            'auto_generate_script': config.AUTO_GENERATE_SCRIPT,
             'ffmpeg': 'available'
         }
     }), 200
@@ -423,6 +472,7 @@ def stream_logs():
     return response
 
 if __name__ == '__main__':
-    logger.info("Starting Flask server on http://127.0.0.1:5001")
+    logger.info(f"Starting Flask server on http://{config.FLASK_HOST}:{config.FLASK_PORT}")
+    logger.info(f"Debug mode: {config.FLASK_DEBUG} (never enable debug on a public host)")
     logger.info("Press CTRL+C to quit")
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    app.run(debug=config.FLASK_DEBUG, host=config.FLASK_HOST, port=config.FLASK_PORT)

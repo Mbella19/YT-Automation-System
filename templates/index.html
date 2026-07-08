@@ -64,7 +64,7 @@
                                 <span
                                     class="material-symbols-outlined text-6xl mb-4 group-hover:scale-110 transition-transform text-gray-500 group-hover:text-white">upload_file</span>
                                 <h3 class="text-xl font-bold mb-2 text-white">DROP VIDEO SOURCE</h3>
-                                <p class="font-mono text-sm text-gray-500 mb-6">MP4, MKV, AVI (MAX 500MB)</p>
+                                <p class="font-mono text-sm text-gray-500 mb-6">MP4, MKV, AVI (MAX 2GB)</p>
 
                                 <input id="videoFile" name="video" type="file" accept="video/*" class="hidden">
                                 <button type="button" id="browseButton" class="neo-btn neo-btn-secondary">
@@ -98,16 +98,16 @@
                         <div class="flex flex-col h-full">
                             <div class="flex-1">
                                 <label for="instructions" class="block font-bold uppercase mb-2 text-gray-300">Paste
-                                    Script Here</label>
+                                    Script <span class="text-zinc-500 normal-case font-normal">(optional — leave blank to auto-generate)</span></label>
                                 <div class="neo-box-flat h-full p-0 overflow-hidden flex flex-col border-zinc-700">
                                     <div
                                         class="bg-black text-white px-4 py-2 font-mono text-xs flex justify-between border-b border-zinc-800">
                                         <span>SCRIPT_INPUT.TXT</span>
-                                        <span class="text-green-500">EDIT MODE</span>
+                                        <span class="text-green-500">AUTO IF EMPTY</span>
                                     </div>
                                     <textarea id="instructions" name="script_text"
                                         class="flex-1 w-full p-4 font-mono text-sm resize-none focus:outline-none bg-zinc-900 text-gray-300 placeholder-zinc-600"
-                                        placeholder="// Paste your full movie script here..." required></textarea>
+                                        placeholder="// Leave blank to let the AI watch the video and write the recap for you, or paste your full script to align it exactly..."></textarea>
                                 </div>
                             </div>
 

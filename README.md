@@ -1,25 +1,26 @@
 # 🎬 Video Editing Automation Software
 
-An AI-powered video editing automation tool that uses **Gemini 2.5 Pro** for intelligent scene analysis, **Deepgram Aura 2** for text-to-speech narration, and **FFmpeg** for video processing.
+An AI-powered video editing automation tool that uses **Gemini 3.5 Flash** (high thinking) for intelligent scene analysis, **Gemini native TTS** for narration, and **FFmpeg** for video processing.
 
 ## ✨ Features
 
-- 🎥 **Automatic Scene Detection**: AI analyzes your video to identify the most important scenes
-- 📝 **AI-Generated Narration**: Creates engaging narration for each scene that matches on-screen action
-- 🔊 **Text-to-Speech**: Converts narration to natural-sounding audio using Deepgram Aura 2
-- ✂️ **Automated Video Editing**: Cuts scenes, mutes original audio, and adds AI narration
-- 🌐 **Google Drive Support**: Process videos directly from Google Drive URLs
-- 📊 **Real-time Logging**: See detailed progress of each processing step
-- 💻 **Beautiful Web Interface**: Simple and modern HTML/CSS frontend
+- 🤖 **Fully Autonomous (no script needed)**: Leave the script blank and Gemini watches the video and *writes* the recap narration itself, with timestamps.
+- 📝 **Or Bring Your Own Script**: Paste a script and the system aligns it to the exact timestamps in the video.
+- 🎥 **Automatic Scene Detection**: AI identifies the most important story beats as quick clips.
+- 🔊 **Text-to-Speech**: Converts narration to natural-sounding audio using Gemini's native TTS (single API key for everything).
+- ✂️ **Automated Video Editing**: Cuts scenes, replaces original audio with AI narration, and keeps audio/video in sync.
+- 🌐 **Google Drive Support**: Process videos directly from Google Drive URLs.
+- 📊 **Real-time Logging**: Live server-sent-events log stream in the browser.
+- 💻 **Web Interface**: Simple, modern dark UI.
 
 ## 🚀 How It Works
 
-1. **Upload Video**: Provide a video file or Google Drive URL
-2. **AI Analysis**: Gemini 2.5 Pro analyzes the video and identifies key scenes (8-10 seconds each)
-3. **Generate Narration**: AI creates engaging narration for each scene
-4. **Text-to-Speech**: Deepgram Aura 2 converts narration to high-quality audio
-5. **Video Processing**: FFmpeg cuts clips, removes original audio, and adds narration
-6. **Download Results**: Get individual clips and a final concatenated video
+1. **Provide Video**: Upload a file or paste a Google Drive URL.
+2. **(Optional) Script**: Paste a script to align, or leave it blank for autonomous generation.
+3. **AI Analysis/Generation**: The video is split into 10-minute chunks; Gemini either aligns your script or writes the recap directly, returning timestamped scenes.
+4. **Text-to-Speech**: Gemini native TTS converts each scene's narration to a WAV file.
+5. **Video Processing**: FFmpeg cuts each clip, sets its length to the narration, and overlays the audio.
+6. **Download Results**: Get individual clips, the scenes JSON, the script, and a final concatenated video.
 
 ## 📋 Prerequisites
 
@@ -65,12 +66,19 @@ pip install -r requirements.txt
 
 ## 🔑 API Keys
 
-The following API keys are already configured in `config.py`:
+Keys are loaded from a `.env` file (never commit it — it's gitignored):
 
-- **Gemini API Key**: [REDACTED]
-- **Deepgram API Key**: [REDACTED]
+```bash
+cp .env.example .env
+# then edit .env and set:
+#   GEMINI_API_KEY=your_ai_studio_key
+```
 
-> ⚠️ **Security Note**: For production use, move API keys to environment variables or a secure vault.
+A single AI Studio Gemini key covers **both** analysis and native TTS. (Note: the
+old Google Cloud TTS path required OAuth2 and does **not** accept API keys — the
+system now uses Gemini's native TTS instead.)
+
+> ⚠️ **Security Note**: If a key was ever committed to git history, rotate it — removing it from the current file does not remove it from history.
 
 ## 🏃 Running the Application
 
@@ -197,8 +205,8 @@ Edit `config.py` to customize:
 ## 🛠️ Technologies Used
 
 - **Backend**: Python, Flask
-- **AI Analysis**: Google Gemini 2.5 Pro API
-- **Text-to-Speech**: Deepgram Aura 2 API
+- **AI Analysis / Script Generation**: Google Gemini 3.5 Flash (via `google-genai`)
+- **Text-to-Speech**: Gemini native TTS
 - **Video Processing**: FFmpeg
 - **Frontend**: HTML5, CSS3, JavaScript
 - **File Management**: Google Drive API (via gdown)

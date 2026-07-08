@@ -4,9 +4,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-env/
-venv/
-ENV/
 build/
 develop-eggs/
 dist/
@@ -26,8 +23,8 @@ wheels/
 # Virtual environments
 venv/
 backend/venv/
-ENV/
 env/
+ENV/
 
 # Node
 node_modules/
@@ -36,7 +33,6 @@ yarn-debug.log*
 yarn-error.log*
 .pnp/
 .pnp.js
-*.log
 
 # React build
 frontend/build/
@@ -48,23 +44,10 @@ frontend/dist/
 *.sqlite3
 *.db.backup
 
-# Uploads
+# Uploads / generated media
 backend/uploads/*
 !backend/uploads/.gitkeep
 uploads/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Project specific (YT Automation)
 outputs/
 temp/
 audio/
@@ -78,6 +61,17 @@ audio/
 *.wav
 *.mp3
 
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
 # Environment variables
 .env
 .env.local
@@ -89,13 +83,3 @@ logs/
 
 # Gemini/Antigravity
 .gemini/
-.env.local
-
-# Logs
-*.log
-logs/
-
-# Gemini/Antigravity
-.gemini/
-=======
->>>>>>> 147aeb689204f9a01df5b3f06ba46cc2fb46d05b

@@ -3,6 +3,7 @@ Gemini AI video analyzer using the new google-genai library
 """
 from google import genai
 from google.genai import types
+from google.genai import errors as genai_errors
 import json
 import re
 import difflib
@@ -13,6 +14,9 @@ import httpx
 from utils.logger import setup_logger
 
 logger = setup_logger()
+
+# HTTP status codes worth retrying (rate limit + transient server errors)
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 class GeminiVideoAnalyzer:
     
@@ -49,9 +53,10 @@ class GeminiVideoAnalyzer:
     def __init__(self, api_key, api_delay_seconds=60,
                  narration_temperature=0.5, timestamp_temperature=0.2,
                  max_retries=3, retry_backoff_seconds=5,
-                 model_name="gemini-3-pro-preview",
+                 model_name="gemini-3.5-flash",
                  api_version=None,
-                 thinking_level="high"):
+                 thinking_level="high",
+                 clip_min=5, clip_max=20):
         """
         Initialize Gemini API client
         
@@ -80,6 +85,8 @@ class GeminiVideoAnalyzer:
         self.retry_backoff_seconds = max(retry_backoff_seconds, 1)
         self.model_name = model_name
         self.thinking_level = thinking_level
+        self.clip_min = clip_min
+        self.clip_max = clip_max
         
         logger.info("Gemini API client initialized successfully")
         logger.info(f"API rate limit delay: {api_delay_seconds}s between calls")
@@ -189,35 +196,100 @@ class GeminiVideoAnalyzer:
     
     def _execute_with_retry(self, func, description):
         """
-        Execute a Gemini API call with retry handling for transient HTTP errors.
+        Execute a Gemini API call with retry handling for transient failures.
+
+        Retries on network errors (httpx) AND on transient Gemini API errors
+        (429 rate limit, 5xx). Non-transient API errors (400/401/403/404) are
+        re-raised immediately so we don't waste retries on a bad request/key.
+
+        NOTE: The google-genai SDK raises google.genai.errors.APIError, which is
+        NOT an httpx error — the previous version only caught httpx and therefore
+        never actually retried real rate-limit/server errors.
         """
         last_error = None
         for attempt in range(1, self.max_retries + 1):
             try:
                 return func()
+            except genai_errors.APIError as exc:
+                status = getattr(exc, "code", None)
+                if status is not None and status not in _RETRYABLE_STATUS:
+                    logger.error(
+                        f"Gemini API error during {description}: {status} {exc}. Not retryable."
+                    )
+                    raise
+                last_error = exc
+                logger.warning(
+                    f"Gemini API transient error during {description}: {status} {exc}. "
+                    f"Attempt {attempt}/{self.max_retries}"
+                )
             except httpx.HTTPError as exc:
                 last_error = exc
                 logger.warning(
                     f"Gemini API network error during {description}: {exc}. "
                     f"Attempt {attempt}/{self.max_retries}"
                 )
-                if attempt >= self.max_retries:
-                    break
-                backoff = self.retry_backoff_seconds * attempt
-                logger.info(f"Retrying {description} in {backoff}s...")
-                time.sleep(backoff)
+
+            if attempt >= self.max_retries:
+                break
+            # Exponential-ish backoff; give 429s extra room.
+            backoff = self.retry_backoff_seconds * attempt
+            if isinstance(last_error, genai_errors.APIError) and getattr(last_error, "code", None) == 429:
+                backoff = max(backoff, self.retry_backoff_seconds * 4)
+            logger.info(f"Retrying {description} in {backoff}s...")
+            time.sleep(backoff)
+
         raise RuntimeError(
-            f"{description} failed after {self.max_retries} attempts due to API connectivity issues. "
-            "Please try again once your network is stable."
+            f"{description} failed after {self.max_retries} attempts. Last error: {last_error}"
         ) from last_error
+
+    def _build_generation_config(self, temperature):
+        """
+        Build a GenerateContentConfig that honors the configured thinking level
+        and temperature. Previously temperature was hardcoded to 0.0 and the
+        thinking level was never sent at all.
+        """
+        kwargs = dict(
+            temperature=temperature,
+            top_p=0.9,
+            top_k=40,
+            media_resolution="MEDIA_RESOLUTION_HIGH",
+        )
+        if self.thinking_level:
+            try:
+                kwargs["thinking_config"] = types.ThinkingConfig(
+                    thinking_level=self.thinking_level
+                )
+            except Exception as exc:  # older SDKs / unsupported models
+                logger.debug(f"thinking_config not applied: {exc}")
+        return types.GenerateContentConfig(**kwargs)
+
+    @staticmethod
+    def _seconds_to_timestamp(total_seconds):
+        """Format an absolute number of seconds as HH:MM:SS.mmm."""
+        total_seconds = max(0.0, float(total_seconds))
+        h = int(total_seconds // 3600)
+        m = int((total_seconds % 3600) // 60)
+        s = total_seconds % 60
+        return f"{h:02d}:{m:02d}:{s:06.3f}"
+
+    def _delete_remote_file(self, video_file):
+        """Best-effort deletion of an uploaded file to avoid quota buildup."""
+        name = getattr(video_file, "name", None)
+        if not name:
+            return
+        try:
+            self.client.files.delete(name=name)
+            logger.debug(f"Deleted uploaded Gemini file: {name}")
+        except Exception as exc:
+            logger.debug(f"Could not delete uploaded file {name}: {exc}")
 
     def upload_video(self, video_path):
         """
         Upload video to Gemini
-        
+
         Args:
             video_path: Path to video file
-            
+
         Returns:
             Uploaded file object
         """
@@ -267,24 +339,14 @@ class GeminiVideoAnalyzer:
         def normalize(text):
             return " ".join(text.split())
             
-        search_norm = normalize(search_text)
-        full_norm = normalize(full_text)
-        
-        try:
-            # Try finding the exact normalized string
-            norm_index = full_norm.rindex(search_norm)
-            # Map back to original text is hard, so we fall back to a simpler exact search in original text
-            # if the normalized one works, it gives us confidence it's there.
-        except ValueError:
-            pass
-
-        # Try exact search in original text ignoring whitespace differences
-        # We'll search for the last 20 chars of the search text
+        # Exact search for the suffix of the search text. Use a FORWARD search
+        # (first occurrence): because we trim the script front-to-back, the first
+        # match of this narration's tail is the correct cut point. rfind() could
+        # jump too far ahead when a phrase repeats, silently dropping script.
         suffix_len = min(len(search_text), 50)
         suffix = search_text[-suffix_len:]
-        
-        # Simple exact search for suffix
-        idx = full_text.rfind(suffix)
+
+        idx = full_text.find(suffix)
         if idx != -1:
             return idx + len(suffix)
 
@@ -328,74 +390,107 @@ class GeminiVideoAnalyzer:
             
         return -1
 
-    def analyze_video_chunks(self, video_chunks, script_text, custom_instructions=None):
+    def _offset_and_clamp_scenes(self, scenes, chunk_index, chunk_seconds):
         """
-        Analyze video chunks sequentially using independent sessions with dynamic script trimming.
-        
+        Convert chunk-relative timestamps to absolute video time, clamping to the
+        chunk bounds so a hallucinated timestamp can't push a clip past EOF.
+        Returns the list of scenes that had usable start < end after clamping.
+        """
+        chunk_offset_seconds = chunk_index * chunk_seconds
+        cleaned = []
+        for scene in scenes:
+            start_rel = self._time_to_seconds(scene.get('start_time'))
+            end_rel = self._time_to_seconds(scene.get('end_time'))
+
+            if start_rel is None or end_rel is None:
+                # Unparseable timestamp(s): blank them so downstream code can't crash
+                # on a truthy-but-invalid value, and the app reports it as skipped
+                # ("missing timestamps") rather than raising.
+                scene['start_time'] = ''
+                scene['end_time'] = ''
+                cleaned.append(scene)
+                continue
+
+            # Clamp into [0, chunk_seconds] and enforce ordering.
+            start_rel = min(max(start_rel, 0.0), chunk_seconds)
+            end_rel = min(max(end_rel, 0.0), chunk_seconds)
+            if end_rel <= start_rel:
+                logger.warning(
+                    f"Dropping scene with non-positive duration after clamping "
+                    f"(start={start_rel:.2f}s end={end_rel:.2f}s)"
+                )
+                continue
+
+            scene['start_time'] = self._seconds_to_timestamp(start_rel + chunk_offset_seconds)
+            scene['end_time'] = self._seconds_to_timestamp(end_rel + chunk_offset_seconds)
+            scene['duration_seconds'] = round(end_rel - start_rel, 2)
+            cleaned.append(scene)
+        return cleaned
+
+    def analyze_video_chunks(self, video_chunks, script_text, custom_instructions=None,
+                             chunk_seconds=600):
+        """
+        Analyze video chunks sequentially using independent sessions with dynamic
+        script trimming. Aligns a provided script to the video timeline.
+
         Args:
             video_chunks: List of paths to video chunk files
             script_text: Full script text to align
-            custom_instructions: Optional user instructions
-            
+            custom_instructions: Optional user instructions (kept separate from the script)
+            chunk_seconds: Length of each chunk in seconds (for offset + clamping)
+
         Returns:
-            Aggregated scenes data
+            Aggregated scenes data: {"scenes": [...]}
         """
         try:
             if not video_chunks:
                 raise ValueError("No video chunks provided for analysis.")
             if not script_text:
                 raise ValueError("Script text is required.")
-                
+
             logger.info(f"Starting sequential analysis of {len(video_chunks)} chunks with dynamic script trimming...")
-            
+
             all_scenes = []
             remaining_script = script_text
-            
+
             for i, chunk_path in enumerate(video_chunks):
                 chunk_num = i + 1
                 logger.info(f"\n--- Processing Chunk {chunk_num}/{len(video_chunks)}: {chunk_path.name} ---")
                 logger.info(f"Remaining script length: {len(remaining_script)} chars")
-                
+
                 if len(remaining_script.strip()) < 10:
                     logger.warning("Remaining script is too short, skipping remaining chunks.")
                     break
-                
-                # Create a FRESH chat session for each chunk to avoid memory pollution
-                # We want each chunk to be treated independently with just the remaining script
-                
-                max_chunk_retries = 3
+
+                max_chunk_retries = self.max_retries
                 chunk_retry_count = 0
                 chunk_success = False
-                
+
                 while chunk_retry_count < max_chunk_retries and not chunk_success:
                     if chunk_retry_count > 0:
                         logger.info(f"Retrying chunk {chunk_num} (Attempt {chunk_retry_count + 1}/{max_chunk_retries})...")
-                        time.sleep(5) # Wait a bit before retry
-                    
+                        time.sleep(self.retry_backoff_seconds)
+
+                    video_file = None
                     try:
+                        # Fresh chat per chunk so each is analyzed independently.
                         chat = self.client.chats.create(model=self.model_name)
-                        
-                        # Upload chunk
+
                         self._wait_for_rate_limit()
-                        # If we already uploaded, we could reuse, but let's be safe and re-upload or just re-use if we had a way to check
-                        # For simplicity, we re-upload or rely on the fact that upload_video might handle it (it doesn't cache currently)
-                        # To avoid re-uploading every retry, we could move upload outside loop, but if upload failed, we need it inside.
-                        # Let's assume upload is stable and focus on analysis retry.
-                        
                         video_file = self.upload_video(chunk_path)
-                        
+
                         file_uri = getattr(video_file, "uri", None)
                         if not file_uri:
                             raise ValueError(f"Failed to get URI for chunk {chunk_num}")
-                        
+
                         video_part = types.Part.from_uri(
                             file_uri=file_uri,
                             mime_type=video_file.mime_type
                         )
-                        
-                        # Construct prompt with the REMAINING script
+
+                        # Construct prompt with the REMAINING script only.
                         prompt_text = textwrap.dedent(f"""
-                            I will upload several cut versions of 1 movie each 10min long so its easy for you too understand, and i want you too watch each part of the movie and understand it end too end then match the script to the movie with corresponding timestamps. note use only the exact words in the script nothing out of it and also always end exactly the way the script ends dont add no continuation symbols or marks always end each section exactly the way it is in the script and also i want ot to be quick cuts about 5secs too 20secs per clip and also each narration per clip should be at least 10 words long and each clip should be not be a continuation of the previous meaning if scene 1 ends at 1:25 for example, scene 2 should not start from 1:25 or 1:26, there should be at least a 10sec difference. Output JSON in this exact format:
+                            I will upload several cut versions of 1 movie each 10min long so its easy for you too understand, and i want you too watch each part of the movie and understand it end too end then match the script to the movie with corresponding timestamps. note use only the exact words in the script nothing out of it and also always end exactly the way the script ends dont add no continuation symbols or marks always end each section exactly the way it is in the script and also i want ot to be quick cuts about {self.clip_min}secs too {self.clip_max}secs per clip and also each narration per clip should be at least 10 words long and each clip should be not be a continuation of the previous meaning if scene 1 ends at 1:25 for example, scene 2 should not start from 1:25 or 1:26, there should be at least a 10sec difference. Output JSON in this exact format:
                             {{
                               "scenes": [
                                 {{
@@ -407,128 +502,230 @@ class GeminiVideoAnalyzer:
                                 }}
                               ]
                             }}
-                            
+
                             SCRIPT:
                             \"\"\"{remaining_script}\"\"\"
                         """).strip()
-                        
+
                         if custom_instructions:
                             prompt_text += f"\n\nADDITIONAL INSTRUCTIONS:\n{custom_instructions}"
-                        
+
                         prompt_part = types.Part.from_text(text=prompt_text)
-                        
-                        # Send message
+
                         logger.info(f"Sending request to Gemini for chunk {chunk_num}...")
+                        gen_config = self._build_generation_config(self.timestamp_temperature)
                         response = self._execute_with_retry(
-                            lambda: chat.send_message(
-                                message=[video_part, prompt_part],
-                                config=types.GenerateContentConfig(
-                                    temperature=0.0,
-                                    top_p=0.9,
-                                    top_k=40,
-                                    media_resolution="MEDIA_RESOLUTION_HIGH"
-                                )
-                            ),
+                            lambda: chat.send_message(message=[video_part, prompt_part], config=gen_config),
                             description=f"analysis of chunk {chunk_num}"
                         )
-                        
+
                         response_text = self._extract_response_text(response)
-                        
-                        # Retry if response is empty
+
                         if not response_text:
                             logger.warning(f"Empty response for chunk {chunk_num}, retrying...")
                             chunk_retry_count += 1
                             continue
-                        
-                        # Parse JSON
-                        try:
-                            chunk_data = self._extract_json_from_response(response_text)
-                            scenes = chunk_data.get("scenes", [])
-                            
-                            if not scenes:
-                                logger.warning(f"No scenes returned for chunk {chunk_num}")
-                                chunk_retry_count += 1
-                                continue
-                                
-                            # Adjust timestamps for chunk offset
-                            chunk_offset_seconds = i * 600  # 10 minutes per chunk
-                            
-                            for scene in scenes:
-                                # Parse relative times
-                                start_rel = self._time_to_seconds(scene.get('start_time'))
-                                end_rel = self._time_to_seconds(scene.get('end_time'))
-                                
-                                if start_rel is not None:
-                                    start_abs = start_rel + chunk_offset_seconds
-                                    # Format back to HH:MM:SS
-                                    h = int(start_abs // 3600)
-                                    m = int((start_abs % 3600) // 60)
-                                    s = start_abs % 60
-                                    scene['start_time'] = f"{h:02d}:{m:02d}:{s:06.3f}"
-                                    
-                                if end_rel is not None:
-                                    end_abs = end_rel + chunk_offset_seconds
-                                    h = int(end_abs // 3600)
-                                    m = int((end_abs % 3600) // 60)
-                                    s = end_abs % 60
-                                    scene['end_time'] = f"{h:02d}:{m:02d}:{s:06.3f}"
-                                    
-                                # Recalculate duration
-                                if start_rel is not None and end_rel is not None:
-                                    scene['duration_seconds'] = round(end_rel - start_rel, 2)
-                                    
-                                all_scenes.append(scene)
-                                
-                            logger.info(f"✓ Chunk {chunk_num} processed: {len(scenes)} scenes found")
-                            
-                            # --- DYNAMIC SCRIPT TRIMMING ---
-                            # Find the last narration in this chunk to know where to cut the script
-                            last_scene = scenes[-1]
-                            last_narration = last_scene.get('narration', '').strip()
-                            
-                            if last_narration:
-                                logger.info(f"Looking for split point after: '{last_narration[:50]}...'")
-                                split_index = self._find_script_split_point(remaining_script, last_narration)
-                                
-                                if split_index != -1:
-                                    # Cut the script from this point onward
-                                    prev_len = len(remaining_script)
-                                    remaining_script = remaining_script[split_index:].strip()
-                                    new_len = len(remaining_script)
-                                    logger.info(f"✓ Script trimmed. Cut {prev_len - new_len} chars. New length: {new_len}")
-                                    chunk_success = True # Success!
-                                else:
-                                    logger.warning("Could not find exact match for last narration to trim script.")
-                                    # RETRY LOGIC for script splitting failure
-                                    if chunk_retry_count < max_chunk_retries - 1:
-                                        logger.warning("Retrying chunk analysis to get better script alignment...")
-                                        chunk_retry_count += 1
-                                        # Remove scenes from this failed attempt
-                                        all_scenes = all_scenes[:-len(scenes)]
-                                        continue
-                                    else:
-                                        logger.warning("Max retries reached. Using full remaining script for next chunk.")
-                                        chunk_success = True # Accept it even if split failed, to move on
-                            else:
-                                logger.warning("Last scene had no narration, cannot trim script.")
-                                chunk_success = True
-                            
-                        except json.JSONDecodeError:
-                            logger.error(f"Failed to parse JSON for chunk {chunk_num}. Response: {response_text}")
+
+                        chunk_data = self._extract_json_from_response(response_text)
+                        scenes = chunk_data.get("scenes", [])
+
+                        if not scenes:
+                            logger.warning(f"No scenes returned for chunk {chunk_num}")
                             chunk_retry_count += 1
                             continue
-                            
+
+                        # Offset + clamp timestamps for THIS attempt (not yet committed).
+                        attempt_scenes = self._offset_and_clamp_scenes(scenes, i, chunk_seconds)
+                        if not attempt_scenes:
+                            logger.warning(f"No usable scenes after clamping for chunk {chunk_num}")
+                            chunk_retry_count += 1
+                            continue
+
+                        # --- DYNAMIC SCRIPT TRIMMING ---
+                        last_narration = (attempt_scenes[-1].get('narration') or '').strip()
+                        split_index = -1
+                        if last_narration:
+                            logger.info(f"Looking for split point after: '{last_narration[:50]}...'")
+                            split_index = self._find_script_split_point(remaining_script, last_narration)
+
+                        if split_index != -1:
+                            all_scenes.extend(attempt_scenes)
+                            prev_len = len(remaining_script)
+                            remaining_script = remaining_script[split_index:].strip()
+                            logger.info(f"✓ Chunk {chunk_num}: {len(attempt_scenes)} scenes. "
+                                        f"Trimmed {prev_len - len(remaining_script)} chars; {len(remaining_script)} left.")
+                            chunk_success = True
+                        elif chunk_retry_count < max_chunk_retries - 1:
+                            # Discard this attempt's scenes and retry for a cleaner split.
+                            logger.warning("Could not locate split point; retrying chunk for better alignment...")
+                            chunk_retry_count += 1
+                            continue
+                        else:
+                            # Final attempt: commit scenes AND advance the script by the
+                            # approximate amount consumed, so the next chunk does NOT
+                            # re-process the same script (which caused duplicate scenes).
+                            all_scenes.extend(attempt_scenes)
+                            consumed = sum(len(s.get('narration') or '') for s in attempt_scenes)
+                            prev_len = len(remaining_script)
+                            remaining_script = remaining_script[consumed:].strip()
+                            logger.warning(f"✓ Chunk {chunk_num}: {len(attempt_scenes)} scenes (approx trim). "
+                                           f"Advanced ~{prev_len - len(remaining_script)} chars to avoid re-processing.")
+                            chunk_success = True
+
+                    except json.JSONDecodeError:
+                        logger.error(f"Failed to parse JSON for chunk {chunk_num}.")
+                        chunk_retry_count += 1
+                        continue
                     except Exception as e:
                         logger.error(f"Error processing chunk {chunk_num}: {str(e)}")
                         chunk_retry_count += 1
                         continue
-            
+                    finally:
+                        # Always remove the uploaded chunk from Gemini to avoid quota buildup.
+                        self._delete_remote_file(video_file)
+
             # Renumber scenes sequentially
             for idx, scene in enumerate(all_scenes, 1):
                 scene['scene_number'] = idx
-                
+
             return {"scenes": all_scenes}
-            
+
         except Exception as e:
             logger.error(f"Error in sequential video analysis: {str(e)}", exc_info=True)
             raise
+
+    def generate_scenes_from_video(self, video_chunks, custom_instructions=None,
+                                   chunk_seconds=600):
+        """
+        AUTONOMOUS MODE: watch the video and WRITE the recap narration directly,
+        with timestamps — no pre-written script required.
+
+        This is what makes the system hands-off: the model both selects the story
+        beats and writes movie-recap-style narration for each, so the user does not
+        have to paste a script. The assembled narration is returned as `full_script`.
+
+        Args:
+            video_chunks: List of paths to video chunk files
+            custom_instructions: Optional creative direction (tone, focus, etc.)
+            chunk_seconds: Length of each chunk in seconds (for offset + clamping)
+
+        Returns:
+            {"scenes": [...], "full_script": "..."}
+        """
+        if not video_chunks:
+            raise ValueError("No video chunks provided for generation.")
+
+        logger.info(f"AUTONOMOUS generation over {len(video_chunks)} chunk(s) — no script needed.")
+
+        all_scenes = []
+
+        for i, chunk_path in enumerate(video_chunks):
+            chunk_num = i + 1
+            logger.info(f"\n--- Generating recap for Chunk {chunk_num}/{len(video_chunks)}: {chunk_path.name} ---")
+
+            max_chunk_retries = self.max_retries
+            chunk_retry_count = 0
+            chunk_success = False
+
+            while chunk_retry_count < max_chunk_retries and not chunk_success:
+                if chunk_retry_count > 0:
+                    logger.info(f"Retrying chunk {chunk_num} (Attempt {chunk_retry_count + 1}/{max_chunk_retries})...")
+                    time.sleep(self.retry_backoff_seconds)
+
+                video_file = None
+                try:
+                    chat = self.client.chats.create(model=self.model_name)
+                    self._wait_for_rate_limit()
+                    video_file = self.upload_video(chunk_path)
+
+                    file_uri = getattr(video_file, "uri", None)
+                    if not file_uri:
+                        raise ValueError(f"Failed to get URI for chunk {chunk_num}")
+
+                    video_part = types.Part.from_uri(file_uri=file_uri, mime_type=video_file.mime_type)
+
+                    prompt_text = textwrap.dedent(f"""
+                        You are a professional YouTube movie-recap narrator (in the style of channels like
+                        Mystery Recapped or Story Recapped). Watch this ~10-minute segment of a movie end to
+                        end and WRITE the recap narration yourself — do not just describe what is on screen,
+                        tell the STORY: what is happening in the plot, character names, motivations and beats.
+
+                        Rules:
+                        - Present tense, engaging, story-driven narration.
+                        - Pick the most important story moments as separate clips.
+                        - Each clip should be {self.clip_min}–{self.clip_max} seconds long.
+                        - Each narration should be at least 10 words and read naturally when spoken aloud.
+                        - Clips must NOT be back-to-back: leave at least a ~10 second gap between the end of
+                          one clip and the start of the next.
+                        - Narration for a clip must describe ONLY what happens within that clip's timestamps
+                          (no foreshadowing or backstory from outside the window).
+                        - Do not include any visual stage directions or camera notes in the narration text.
+
+                        Output ONLY JSON in exactly this format:
+                        {{
+                          "scenes": [
+                            {{
+                              "scene_number": 1,
+                              "start_time": "MM:SS",
+                              "end_time": "MM:SS",
+                              "duration_seconds": 12.5,
+                              "narration": "The written recap narration for this clip."
+                            }}
+                          ]
+                        }}
+                    """).strip()
+
+                    if custom_instructions:
+                        prompt_text += f"\n\nADDITIONAL CREATIVE DIRECTION:\n{custom_instructions}"
+
+                    prompt_part = types.Part.from_text(text=prompt_text)
+
+                    logger.info(f"Sending generation request to Gemini for chunk {chunk_num}...")
+                    gen_config = self._build_generation_config(self.narration_temperature)
+                    response = self._execute_with_retry(
+                        lambda: chat.send_message(message=[video_part, prompt_part], config=gen_config),
+                        description=f"recap generation for chunk {chunk_num}"
+                    )
+
+                    response_text = self._extract_response_text(response)
+                    if not response_text:
+                        logger.warning(f"Empty response for chunk {chunk_num}, retrying...")
+                        chunk_retry_count += 1
+                        continue
+
+                    chunk_data = self._extract_json_from_response(response_text)
+                    scenes = chunk_data.get("scenes", [])
+                    if not scenes:
+                        logger.warning(f"No scenes generated for chunk {chunk_num}")
+                        chunk_retry_count += 1
+                        continue
+
+                    attempt_scenes = self._offset_and_clamp_scenes(scenes, i, chunk_seconds)
+                    if not attempt_scenes:
+                        logger.warning(f"No usable scenes after clamping for chunk {chunk_num}")
+                        chunk_retry_count += 1
+                        continue
+
+                    all_scenes.extend(attempt_scenes)
+                    logger.info(f"✓ Chunk {chunk_num}: generated {len(attempt_scenes)} scenes")
+                    chunk_success = True
+
+                except json.JSONDecodeError:
+                    logger.error(f"Failed to parse JSON for chunk {chunk_num}.")
+                    chunk_retry_count += 1
+                    continue
+                except Exception as e:
+                    logger.error(f"Error generating chunk {chunk_num}: {str(e)}")
+                    chunk_retry_count += 1
+                    continue
+                finally:
+                    self._delete_remote_file(video_file)
+
+        # Renumber and assemble the full narration script from the generated scenes.
+        for idx, scene in enumerate(all_scenes, 1):
+            scene['scene_number'] = idx
+
+        full_script = "\n\n".join(
+            (s.get('narration') or '').strip() for s in all_scenes if (s.get('narration') or '').strip()
+        )
+        return {"scenes": all_scenes, "full_script": full_script}

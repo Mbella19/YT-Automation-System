@@ -195,11 +195,35 @@ Edit `config.py` to customize:
 - Check the file is a video
 - Try downloading manually first
 
+## ⏳ Background jobs
+
+Processing runs on a background worker, so requests return immediately and results
+survive a page refresh:
+
+- `POST /api/process` enqueues a job and returns `202` with a `job_id`.
+- The UI polls `GET /api/jobs/<job_id>` for status/stage and shows the result when done.
+- Job state is persisted to `outputs/<job_id>/job.json`.
+
+## ▶️ Optional: auto-upload to YouTube
+
+Uploads use OAuth2 (an API key can't upload). One-time setup:
+
+1. Enable **YouTube Data API v3** in Google Cloud Console.
+2. Create an **OAuth client ID → Desktop app**, download it to `client_secrets.json`.
+3. Run once: `python -m utils.youtube_uploader` and complete the sign-in.
+4. Tick **Auto-upload to YouTube** in the UI (defaults to *private*). Title,
+   description, and tags are generated automatically from the recap.
+
+`client_secrets.json` and `youtube_token.json` are gitignored — never commit them.
+
 ## 📝 API Endpoints
 
 - `GET /` - Main web interface
-- `POST /api/process` - Process video (accepts file upload or Google Drive URL)
+- `POST /api/process` - Enqueue a processing job (file upload or Google Drive URL); returns a `job_id`
+- `GET /api/jobs/<job_id>` - Job status, stage, and result
+- `GET /api/jobs` - List known jobs
 - `GET /api/download/<session_id>/<filename>` - Download processed files
+- `GET /api/youtube/status` - Whether YouTube upload is authorized
 - `GET /api/status` - Health check
 
 ## 🛠️ Technologies Used

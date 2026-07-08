@@ -78,6 +78,11 @@ GEMINI_API_RETRY_BACKOFF_SECONDS = _env_int("GEMINI_API_RETRY_BACKOFF_SECONDS", 
 AUDIO_START_DELAY_MS = _env_int("AUDIO_START_DELAY_MS", 0)  # Silence before narration starts
 USE_AUDIO_BASED_TIMING = _env_bool("USE_AUDIO_BASED_TIMING", True)  # Clip length follows narration length
 
+# YouTube upload settings (OAuth2 — API keys can't upload)
+YOUTUBE_CLIENT_SECRETS = os.getenv("YOUTUBE_CLIENT_SECRETS", str(BASE_DIR / "client_secrets.json"))
+YOUTUBE_TOKEN_FILE = os.getenv("YOUTUBE_TOKEN_FILE", str(BASE_DIR / "youtube_token.json"))
+YOUTUBE_DEFAULT_PRIVACY = os.getenv("YOUTUBE_DEFAULT_PRIVACY", "private")  # private|unlisted|public
+
 # Server settings
 FLASK_HOST = os.getenv("FLASK_HOST", "127.0.0.1")
 FLASK_PORT = _env_int("FLASK_PORT", 5001)

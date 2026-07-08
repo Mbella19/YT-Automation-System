@@ -6,3 +6,7 @@ google-genai
 requests
 gdown
 httpx
+# YouTube upload (OAuth2) — optional, only needed if you enable auto-upload
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2

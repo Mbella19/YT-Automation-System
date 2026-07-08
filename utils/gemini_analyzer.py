@@ -594,6 +594,56 @@ class GeminiVideoAnalyzer:
             logger.error(f"Error in sequential video analysis: {str(e)}", exc_info=True)
             raise
 
+    def generate_youtube_metadata(self, script_text, movie_title=None):
+        """
+        Generate YouTube title, description, and tags from the recap script.
+        Text-only call (cheap). Returns a dict; falls back gracefully on failure
+        so a metadata hiccup never blocks the upload.
+        """
+        fallback = {
+            "title": (movie_title or "Movie Recap")[:100],
+            "description": (script_text or "")[:4900],
+            "tags": ["movie recap", "recap", "movie summary"],
+        }
+        if not script_text or not script_text.strip():
+            return fallback
+
+        title_hint = f'The movie/series is titled "{movie_title}". ' if movie_title else ""
+        prompt = textwrap.dedent(f"""
+            You are a YouTube growth expert for a movie-recap channel. {title_hint}
+            Based on the recap narration below, produce clickable but non-clickbait
+            metadata. Output ONLY JSON:
+            {{
+              "title": "compelling title, <= 90 characters",
+              "description": "2-3 short paragraphs summarizing the recap, then a line of relevant hashtags",
+              "tags": ["10-15", "relevant", "lowercase", "search", "tags"]
+            }}
+
+            RECAP NARRATION:
+            \"\"\"{script_text[:8000]}\"\"\"
+        """).strip()
+
+        try:
+            self._wait_for_rate_limit()
+            gen_config = self._build_generation_config(self.narration_temperature)
+            response = self._execute_with_retry(
+                lambda: self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=gen_config,
+                ),
+                description="YouTube metadata generation",
+            )
+            data = self._extract_json_from_response(self._extract_response_text(response))
+            return {
+                "title": (data.get("title") or fallback["title"])[:100],
+                "description": (data.get("description") or fallback["description"])[:5000],
+                "tags": data.get("tags") or fallback["tags"],
+            }
+        except Exception as exc:
+            logger.warning(f"Metadata generation failed, using fallback: {exc}")
+            return fallback
+
     def generate_scenes_from_video(self, video_chunks, custom_instructions=None,
                                    chunk_seconds=600):
         """

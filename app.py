@@ -18,6 +18,7 @@ import queue
 import shutil
 import traceback
 from datetime import datetime
+from pathlib import Path
 
 # Import lightweight utilities first (fast startup)
 from utils.logger import (
@@ -27,6 +28,7 @@ from utils.logger import (
     register_log_listener,
     unregister_log_listener,
 )
+from utils.job_manager import JobManager
 import config
 
 # Initialize Flask app
@@ -113,129 +115,105 @@ def index():
     logger.info("Main page accessed")
     return render_template('index.html')
 
-@app.route('/api/process', methods=['POST'])
-def process_video():
+def _sanitize_session_id(raw):
+    """Reduce a requested session id to a safe [alnum-_] directory name."""
+    sanitized = ''.join(c for c in (raw or '') if c.isalnum() or c in {'-', '_'})
+    return sanitized[:40]
+
+
+def _youtube_uploader():
+    from utils.youtube_uploader import YouTubeUploader
+    return YouTubeUploader(
+        client_secrets_file=config.YOUTUBE_CLIENT_SECRETS,
+        token_file=config.YOUTUBE_TOKEN_FILE,
+    )
+
+
+def _youtube_authorized():
+    try:
+        return _youtube_uploader().is_authorized()
+    except Exception:
+        return False
+
+
+def _maybe_upload_youtube(gemini_analyzer, final_video_path, script_text, movie_title, params):
+    """Generate metadata + upload. Non-fatal: returns a dict (with 'error' on failure)."""
+    try:
+        metadata = gemini_analyzer.generate_youtube_metadata(script_text, movie_title)
+        uploader = _youtube_uploader()
+        result = uploader.upload(
+            video_path=final_video_path,
+            title=metadata['title'],
+            description=metadata['description'],
+            tags=metadata['tags'],
+            privacy_status=params.get('youtube_privacy') or config.YOUTUBE_DEFAULT_PRIVACY,
+        )
+        result['title'] = metadata['title']
+        return result
+    except Exception as exc:
+        logger.error(f"YouTube upload failed (video still produced): {exc}", exc_info=True)
+        return {'error': str(exc)}
+
+
+def _run_pipeline(job):
     """
-    Main endpoint to process video
-    Accepts either a video file upload or a Google Drive URL
+    Execute the full pipeline for one job. Runs on the JobManager worker thread.
+    Returns the result dict; raising marks the job failed.
     """
+    params = job.params
+    session_id = job.job_id
+    set_session_context(session_id)
     try:
         logger.info("=" * 80)
-        logger.info("NEW VIDEO PROCESSING REQUEST")
+        logger.info(f"PROCESSING JOB {session_id}")
         logger.info("=" * 80)
 
-        # Get lazy-loaded services
         services = _get_services()
         gemini_analyzer = services['gemini_analyzer']
         gemini_tts = services['gemini_tts']
         video_processor = services['video_processor']
 
-        video_path = None
-        requested_session_id = (request.form.get('session_id') or '').strip()
-        if requested_session_id:
-            sanitized = ''.join(
-                c for c in requested_session_id if c.isalnum() or c in {'-', '_'}
-            )
-            session_id = sanitized[:40] if sanitized else datetime.now().strftime("%Y%m%d_%H%M%S")
-        else:
-            session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        set_session_context(session_id)
-        
-        # Create session-specific directories
         session_dir = config.TEMP_DIR / session_id
         session_audio_dir = config.AUDIO_DIR / session_id
         session_output_dir = config.OUTPUT_DIR / session_id
-        
         for directory in [session_dir, session_audio_dir, session_output_dir]:
             directory.mkdir(parents=True, exist_ok=True)
-        
-        logger.info(f"Session ID: {session_id}")
-        
-        # Optional metadata
-        movie_title = request.form.get('movie_title', '').strip()
-        if not movie_title:
-            movie_title = "Untitled Video"
-        logger.info(f"Movie title: {movie_title}")
-        
-        # Optional creator instructions
-        user_instructions = request.form.get('instructions', '').strip()
-        if user_instructions:
-            logger.info("Custom instructions received for this session")
-        else:
-            user_instructions = None
-        
-        # Step 1: Get script input (optional — autonomous mode generates it).
-        script_text = request.form.get('script_text', '').strip()
-        auto_generate = not script_text
-        if auto_generate and not config.AUTO_GENERATE_SCRIPT:
-            logger.error("Script text missing and auto-generation disabled")
-            return jsonify({'error': 'Please provide the full script text.'}), 400
 
-        if auto_generate:
-            logger.info("No script provided — will auto-generate the recap from the video.")
-        else:
-            logger.info(f"Script received: {len(script_text)} chars")
-        
-        # Step 2: Acquire the source video
-        if 'drive_url' in request.form and request.form['drive_url']:
-            drive_url = request.form['drive_url']
-            logger.info(f"Processing Google Drive URL: {drive_url}")
+        movie_title = params['movie_title']
+        user_instructions = params['user_instructions']
+        script_text = params['script_text']
+        auto_generate = params['auto_generate']
 
-            # Download from Google Drive (lazy import)
+        # Step 1: Acquire the source video (download here if it's a Drive URL).
+        job.set_stage("Acquiring video")
+        video_path = params.get('video_path')
+        if video_path:
+            video_path = Path(video_path)
+            if not video_path.exists():
+                raise RuntimeError("Uploaded video file is missing.")
+        else:
             from utils.drive_downloader import download_from_drive
+            logger.info("Downloading video from Google Drive...")
+            target = session_dir / f"video_{session_id}.mp4"
+            downloaded = download_from_drive(params.get('drive_url'), target)
+            if not downloaded:
+                raise RuntimeError("Failed to download video from Google Drive")
+            video_path = Path(downloaded)
+        logger.info(f"✓ Source video ready: {video_path}")
 
-            video_filename = f"video_{session_id}.mp4"
-            video_path = session_dir / video_filename
-
-            logger.info("Step 2: Downloading video from Google Drive...")
-            downloaded_path = download_from_drive(drive_url, video_path)
-            
-            if not downloaded_path:
-                logger.error("Failed to download video from Google Drive")
-                return jsonify({'error': 'Failed to download video from Google Drive'}), 400
-            
-            video_path = downloaded_path
-            logger.info(f"✓ Video downloaded successfully: {video_path}")
-            
-        elif 'video' in request.files:
-            video_file = request.files['video']
-            
-            if video_file.filename == '':
-                logger.error("No file selected")
-                return jsonify({'error': 'No file selected'}), 400
-            
-            if not allowed_file(video_file.filename):
-                logger.error(f"Invalid file type: {video_file.filename}")
-                return jsonify({'error': 'Invalid file type. Allowed: ' + ', '.join(ALLOWED_EXTENSIONS)}), 400
-            
-            filename = secure_filename(video_file.filename)
-            video_path = session_dir / filename
-            
-            logger.info(f"Step 2: Saving uploaded video: {filename}")
-            video_file.save(video_path)
-            logger.info(f"✓ Video saved: {video_path}")
-            
-        else:
-            logger.error("No video file or Google Drive URL provided")
-            return jsonify({'error': 'Please provide either a video file or Google Drive URL'}), 400
-        
-        # Step 3: Split video, then either ALIGN a provided script or GENERATE one.
-        logger.info("\nStep 3: Splitting video and building the recap...")
-
+        # Step 2: Split, then ALIGN a provided script or GENERATE one.
+        job.set_stage("Analyzing video")
         chunk_seconds = 600
-        # Split video into 10-minute chunks
         video_chunks = video_processor.split_video(video_path, chunk_duration=chunk_seconds)
         logger.info(f"✓ Video split into {len(video_chunks)} chunks")
 
         if auto_generate:
-            logger.info("Autonomous mode: generating the recap script from the video...")
+            logger.info("Autonomous mode: generating the recap from the video...")
             scenes_data = gemini_analyzer.generate_scenes_from_video(
                 video_chunks=video_chunks,
                 custom_instructions=user_instructions,
                 chunk_seconds=chunk_seconds,
             )
-            # The generated narration becomes the script.
             script_text = scenes_data.get('full_script', '') or script_text
         else:
             scenes_data = gemini_analyzer.analyze_video_chunks(
@@ -248,62 +226,49 @@ def process_video():
 
         scenes_data['movie_title'] = movie_title
 
-        # Persist the final script (provided or generated) for download.
         script_path = session_output_dir / "script.txt"
-        with open(script_path, 'w', encoding='utf-8') as script_file:
-            script_file.write(script_text or '')
-        logger.info(f"✓ Script saved to: {script_path}")
-        
-        valid_scenes = []
-        skipped_scenes = []
+        script_path.write_text(script_text or '', encoding='utf-8')
+
+        # Validate scenes.
+        valid_scenes, skipped_scenes = [], []
         for scene in scenes_data.get('scenes', []):
             status_flag = (scene.get('status') or '').strip().lower()
             has_timestamps = bool(scene.get('start_time') and scene.get('end_time'))
             has_narration = bool(scene.get('narration') and scene['narration'].strip())
             if status_flag == 'review' or not has_timestamps or not has_narration:
-                skip_reasons = []
+                reasons = []
                 if status_flag == 'review':
-                    skip_reasons.append('flagged for review')
+                    reasons.append('flagged for review')
                 if not has_timestamps:
-                    skip_reasons.append('missing timestamps')
+                    reasons.append('missing timestamps')
                 if not has_narration:
-                    skip_reasons.append('missing narration')
-                if skip_reasons:
-                    scene['skip_reason'] = ', '.join(skip_reasons)
+                    reasons.append('missing narration')
+                scene['skip_reason'] = ', '.join(reasons)
                 skipped_scenes.append(scene)
                 continue
             valid_scenes.append(scene)
-        
+
         if skipped_scenes:
-            logger.warning(f"Skipping {len(skipped_scenes)} segments flagged for review or missing timestamps.")
-        
+            logger.warning(f"Skipping {len(skipped_scenes)} segments (review/missing data).")
         scenes_data['scenes'] = valid_scenes
         if not valid_scenes:
-            logger.error("Alignment returned no usable segments")
-            return jsonify({'error': 'Unable to align the script to the provided video.'}), 400
+            raise RuntimeError("No usable segments were produced from the video.")
         if skipped_scenes:
             scenes_data['skipped_scenes'] = skipped_scenes
-        logger.info(f"✓ Script alignment complete. Found {len(scenes_data['scenes'])} segments")
-        
-        # Save scenes data
+        logger.info(f"✓ {len(valid_scenes)} usable segments")
+
+        session_output_dir.mkdir(parents=True, exist_ok=True)
         scenes_json_path = session_output_dir / "scenes.json"
-        
-        # Robustness: Ensure directory exists (in case it was deleted during processing)
-        if not session_output_dir.exists():
-            logger.warning(f"Output directory missing, recreating: {session_output_dir}")
-            session_output_dir.mkdir(parents=True, exist_ok=True)
-            
         with open(scenes_json_path, 'w', encoding='utf-8') as f:
             json.dump(scenes_data, f, indent=2)
-        logger.info(f"✓ Scenes data saved to: {scenes_json_path}")
-        
-        # Step 4: Generate narration audio with Gemini TTS
-        logger.info("\nStep 4: Generating narration audio with Gemini TTS...")
+
+        # Step 3: Narration audio.
+        job.set_stage("Generating narration")
         audio_files = gemini_tts.generate_audio_for_scenes(scenes_data, session_audio_dir)
         logger.info(f"✓ Generated {len(audio_files)} audio files")
-        
-        # Step 5: Process video clips with FFmpeg (audio-based timing for perfect sync)
-        logger.info("\nStep 5: Processing video clips with FFmpeg...")
+
+        # Step 4: Render clips.
+        job.set_stage("Rendering clips")
         processed_clips = video_processor.process_all_clips(
             input_video=video_path,
             scenes_data=scenes_data,
@@ -312,39 +277,30 @@ def process_video():
             start_delay_ms=config.AUDIO_START_DELAY_MS,
             use_audio_timing=config.USE_AUDIO_BASED_TIMING,
         )
-        logger.info(f"✓ Processed {len(processed_clips)} video clips")
-        
-        # Step 6: Concatenate all clips (optional)
-        logger.info("\nStep 6: Creating final concatenated video...")
+        logger.info(f"✓ Processed {len(processed_clips)} clips")
+
+        # Step 5: Concatenate.
+        job.set_stage("Finalizing video")
         clip_paths = [clip['clip_path'] for clip in processed_clips]
         final_video_path = session_output_dir / f"final_video_{session_id}.mp4"
-        
         try:
             video_processor.concatenate_clips(clip_paths, final_video_path)
-            logger.info(f"✓ Final video created: {final_video_path}")
         except Exception as e:
             logger.warning(f"Could not concatenate clips: {str(e)}")
             final_video_path = None
 
-        # Free disk: remove the source video + chunks now that clips are rendered.
-        # (Outputs and audio are kept for download; /api/cleanup removes those later.)
+        # Free disk: remove source + chunks (outputs/audio kept for download).
         try:
             if session_dir.exists():
                 shutil.rmtree(session_dir)
-                logger.info(f"Cleaned up temp source/chunks: {session_dir}")
         except Exception as e:
             logger.warning(f"Could not clean temp dir {session_dir}: {str(e)}")
 
-        logger.info("\n" + "=" * 80)
-        logger.info("VIDEO PROCESSING COMPLETED SUCCESSFULLY")
-        logger.info("=" * 80)
-        
-        # Prepare response
-        response_data = {
+        result = {
             'success': True,
             'session_id': session_id,
-            'scenes_count': len(scenes_data['scenes']),
-            'scenes': scenes_data['scenes'],
+            'scenes_count': len(valid_scenes),
+            'scenes': valid_scenes,
             'clips': processed_clips,
             'final_video': str(final_video_path) if final_video_path else None,
             'full_script': script_text,
@@ -352,38 +308,118 @@ def process_video():
             'script_file': script_path.name,
             'scenes_file': scenes_json_path.name,
             'alignment_notes': scenes_data.get('notes'),
-            'skipped_scenes': len(scenes_data.get('skipped_scenes', [])),
-            'skipped_scene_numbers': [
-                scene.get('scene_number') for scene in scenes_data.get('skipped_scenes', [])
-            ],
+            'skipped_scenes': len(skipped_scenes),
+            'skipped_scene_numbers': [s.get('scene_number') for s in skipped_scenes],
             'skipped_scene_details': [
-                {
-                    'scene_number': scene.get('scene_number'),
-                    'reason': scene.get('skip_reason')
-                }
-                for scene in scenes_data.get('skipped_scenes', [])
+                {'scene_number': s.get('scene_number'), 'reason': s.get('skip_reason')}
+                for s in skipped_scenes
             ],
-            'message': 'Video processed successfully!'
+            'instructions': user_instructions,
+            'youtube': None,
         }
-        
-        if user_instructions:
-            response_data['instructions'] = user_instructions
-        
-        return jsonify(response_data), 200
-        
-    except Exception as e:
-        logger.error("\n" + "=" * 80)
-        logger.error("ERROR IN VIDEO PROCESSING")
-        logger.error("=" * 80)
-        logger.error(f"Error: {str(e)}")
-        logger.error(traceback.format_exc())
-        
-        return jsonify({
-            'error': str(e),
-            'traceback': traceback.format_exc()
-        }), 500
+
+        # Step 6 (optional): upload to YouTube. Non-fatal.
+        if params.get('upload_youtube') and final_video_path:
+            job.set_stage("Uploading to YouTube")
+            result['youtube'] = _maybe_upload_youtube(
+                gemini_analyzer, final_video_path, script_text, movie_title, params
+            )
+
+        logger.info("=" * 80)
+        logger.info(f"JOB {session_id} COMPLETED")
+        logger.info("=" * 80)
+        return result
     finally:
         clear_session_context()
+
+
+# Background job queue (single worker). Persists results to outputs/<sid>/job.json.
+job_manager = JobManager(runner=_run_pipeline, state_root=config.OUTPUT_DIR)
+
+
+@app.route('/api/process', methods=['POST'])
+def process_video():
+    """
+    Enqueue a video processing job and return a job id immediately.
+    Accepts a video file upload or a Google Drive URL (script optional).
+    """
+    try:
+        session_id = _sanitize_session_id((request.form.get('session_id') or '').strip()) \
+            or datetime.now().strftime("%Y%m%d_%H%M%S")
+        session_dir = config.TEMP_DIR / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        movie_title = request.form.get('movie_title', '').strip() or "Untitled Video"
+        user_instructions = request.form.get('instructions', '').strip() or None
+        script_text = request.form.get('script_text', '').strip()
+        auto_generate = not script_text
+        if auto_generate and not config.AUTO_GENERATE_SCRIPT:
+            return jsonify({'error': 'Please provide the full script text.'}), 400
+
+        upload_youtube = request.form.get('upload_youtube', '').strip().lower() in {'1', 'true', 'on', 'yes'}
+        if upload_youtube and not _youtube_authorized():
+            return jsonify({'error': 'YouTube upload requested but not authorized. '
+                                     'Run `python -m utils.youtube_uploader` once to sign in.'}), 400
+
+        params = {
+            'movie_title': movie_title,
+            'user_instructions': user_instructions,
+            'script_text': script_text,
+            'auto_generate': auto_generate,
+            'upload_youtube': upload_youtube,
+            'youtube_privacy': request.form.get('youtube_privacy', config.YOUTUBE_DEFAULT_PRIVACY),
+        }
+
+        # Resolve the video source synchronously (the request stream is gone once
+        # we return). File uploads are saved now; Drive URLs download in the job.
+        if request.form.get('drive_url', '').strip():
+            params['drive_url'] = request.form['drive_url'].strip()
+        elif 'video' in request.files and request.files['video'].filename:
+            video_file = request.files['video']
+            if not allowed_file(video_file.filename):
+                return jsonify({'error': 'Invalid file type. Allowed: ' + ', '.join(ALLOWED_EXTENSIONS)}), 400
+            save_path = session_dir / secure_filename(video_file.filename)
+            video_file.save(save_path)
+            params['video_path'] = str(save_path)
+        else:
+            return jsonify({'error': 'Please provide either a video file or Google Drive URL'}), 400
+
+        job = job_manager.submit(session_id, params)
+        return jsonify({
+            'success': True,
+            'job_id': session_id,
+            'session_id': session_id,
+            'status': job.status,
+            'queue_position': job_manager.queue_position(session_id),
+            'message': 'Job queued. Poll /api/jobs/<job_id> for progress.',
+        }), 202
+
+    except Exception as e:
+        logger.error(f"Error queuing job: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/jobs/<job_id>')
+def get_job(job_id):
+    """Return current status/result for a job."""
+    job = job_manager.get(secure_filename(job_id))
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    payload = job.to_dict()
+    payload['queue_position'] = job_manager.queue_position(job.job_id)
+    return jsonify(payload), 200
+
+
+@app.route('/api/jobs')
+def list_jobs():
+    """List known jobs (most recent state, no full results)."""
+    return jsonify({'jobs': job_manager.list_jobs()}), 200
+
+
+@app.route('/api/youtube/status')
+def youtube_status():
+    """Report whether YouTube upload is authorized (token present)."""
+    return jsonify({'authorized': _youtube_authorized()}), 200
 
 @app.route('/api/download/<session_id>/<filename>')
 def download_file(session_id, filename):

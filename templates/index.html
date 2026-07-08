@@ -93,6 +93,25 @@
                                         class="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">link</span>
                                 </div>
                             </div>
+
+                            <!-- YouTube Auto-Upload -->
+                            <div class="neo-box-flat p-4 border-zinc-700">
+                                <label class="flex items-center gap-3 cursor-pointer">
+                                    <input id="youtubeToggle" type="checkbox" class="w-5 h-5 accent-red-600" disabled>
+                                    <span class="material-symbols-outlined text-red-500">smart_display</span>
+                                    <span class="font-bold uppercase text-gray-300">Auto-upload to YouTube</span>
+                                </label>
+                                <p id="youtubeHint" class="font-mono text-xs text-gray-500 mt-2">Checking connection…</p>
+                                <div class="mt-3">
+                                    <label for="youtubePrivacy" class="block font-mono text-xs text-gray-400 mb-1">Privacy</label>
+                                    <select id="youtubePrivacy" name="youtube_privacy"
+                                        class="neo-input text-sm py-2" disabled>
+                                        <option value="private">Private</option>
+                                        <option value="unlisted">Unlisted</option>
+                                        <option value="public">Public</option>
+                                    </select>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="flex flex-col h-full">
@@ -287,6 +306,10 @@
                                 <div class="pt-6 border-t-2 border-zinc-700">
                                     <p id="alignmentNotes"
                                         class="hidden font-mono text-xs text-red-400 mb-4 bg-red-900/20 p-2 border border-red-500">
+                                    </p>
+
+                                    <p id="youtubeResult"
+                                        class="hidden font-mono text-xs mb-4 bg-zinc-900 p-3 border border-zinc-700">
                                     </p>
 
                                     <button id="processAnotherBtn" type="button"

@@ -46,11 +46,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const defaultSubmitMarkup = submitBtn ? submitBtn.innerHTML : '';
 
+    const youtubeToggle = document.getElementById('youtubeToggle');
+    const youtubePrivacySelect = document.getElementById('youtubePrivacy');
+    const youtubeResult = document.getElementById('youtubeResult');
+
     const state = {
         result: null,
         currentSceneIndex: null,
         sessionId: null,
         logEventSource: null,
+        jobId: null,
+        pollTimer: null,
     };
 
     function showSection(target) {
@@ -206,6 +212,54 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function stopPolling() {
+        if (state.pollTimer) {
+            clearTimeout(state.pollTimer);
+            state.pollTimer = null;
+        }
+    }
+
+    async function pollJob(jobId) {
+        if (!jobId) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+            if (!response.ok) {
+                throw new Error('Lost track of the processing job.');
+            }
+            const job = await response.json();
+
+            if (job.status === 'queued') {
+                const pos = job.queue_position > 0 ? ` (position ${job.queue_position})` : '';
+                setStage(`Queued${pos}`);
+            } else if (job.stage) {
+                setStage(job.stage);
+            }
+
+            if (job.status === 'completed') {
+                stopPolling();
+                updateProgress(100, 'Processing complete!');
+                setStage('Complete');
+                // Small delay so the final log lines flush into view.
+                setTimeout(() => displayResults(job.result), 400);
+                return;
+            }
+
+            if (job.status === 'failed') {
+                stopPolling();
+                handleProcessingError(new Error(job.error || 'Processing failed.'));
+                return;
+            }
+
+            // Still queued/running — poll again.
+            state.pollTimer = setTimeout(() => pollJob(jobId), 2000);
+        } catch (error) {
+            stopPolling();
+            handleProcessingError(error instanceof Error ? error : new Error('Lost connection to the job.'));
+        }
+    }
+
     function generateSessionId() {
         const now = new Date();
         const pad = (value) => value.toString().padStart(2, '0');
@@ -223,6 +277,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function resetProcessingView() {
         stopLogStream();
+        stopPolling();
         updateProgress(0, 'Waiting to start…');
         setStage('Initializing...');
         if (processingInputName) {
@@ -465,8 +520,28 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    function renderYouTubeResult(result) {
+        if (!youtubeResult) {
+            return;
+        }
+        const yt = result && result.youtube;
+        if (!yt) {
+            youtubeResult.classList.add('hidden');
+            youtubeResult.innerHTML = '';
+            return;
+        }
+        youtubeResult.classList.remove('hidden');
+        if (yt.error) {
+            youtubeResult.innerHTML = `<span class="text-red-400">YouTube upload failed:</span> ${yt.error}`;
+        } else if (yt.url) {
+            youtubeResult.innerHTML = `<span class="text-green-400">Uploaded to YouTube (${yt.privacy_status || 'private'}):</span> `
+                + `<a href="${yt.url}" target="_blank" rel="noopener noreferrer" class="underline text-blue-400">${yt.url}</a>`;
+        }
+    }
+
     function displayResults(result) {
         stopLogStream();
+        stopPolling();
         state.result = result;
         state.currentSceneIndex = null;
 
@@ -541,6 +616,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         renderClipDownloads();
         renderSceneList();
+        renderYouTubeResult(result);
         setStage('Complete');
         updateProgress(100, 'Processing complete!');
         showSection('results');
@@ -584,6 +660,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function handleProcessingError(error) {
         stopLogStream();
+        stopPolling();
         console.error('Processing error:', error);
         setSubmitDisabled(false);
         if (submitBtn) {
@@ -660,6 +737,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const driveUrl = driveUrlInput ? driveUrlInput.value.trim() : '';
             const scriptText = instructionsInput ? instructionsInput.value.trim() : '';
             const movieTitle = movieTitleInput ? movieTitleInput.value.trim() : '';
+            const uploadYouTube = youtubeToggle ? youtubeToggle.checked : false;
+            const youtubePrivacy = youtubePrivacySelect ? youtubePrivacySelect.value : 'private';
 
             if (!videoFile && !driveUrl) {
                 showUploadAlert('Please upload a video or provide a Google Drive link.');
@@ -686,6 +765,10 @@ document.addEventListener('DOMContentLoaded', () => {
             formData.append('script_text', scriptText);
             formData.append('movie_title', movieTitle);
             formData.append('session_id', sessionId);
+            if (uploadYouTube) {
+                formData.append('upload_youtube', 'true');
+                formData.append('youtube_privacy', youtubePrivacy);
+            }
 
             resetScriptDetails();
 
@@ -702,9 +785,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 : 'Preparing to align your script to the video…');
 
             try {
-                updateProgress(20, autoMode ? 'Analyzing video and writing narration…' : 'Preparing video for alignment…');
-                setStage(autoMode ? 'Writing recap' : 'Aligning recap to video');
-
+                // Enqueue the job. The server returns immediately with a job id;
+                // real progress comes from the live log stream + job polling, so
+                // the result survives a page refresh or a dropped connection.
                 const response = await fetch('/api/process', {
                     method: 'POST',
                     body: formData,
@@ -723,28 +806,49 @@ document.addEventListener('DOMContentLoaded', () => {
                     throw new Error(message);
                 }
 
-                const result = await response.json();
-
-                updateProgress(65, 'Recap aligned to video timeline…');
-
-                updateProgress(78, 'Generating narration audio…');
-                setStage('Generating narration audio');
-
-                updateProgress(90, 'Processing video clips with FFmpeg…');
-                setStage('Processing video clips');
-
-                updateProgress(100, 'Processing complete!');
-                setStage('Finalizing results');
-
-                setTimeout(() => displayResults(result), 400);
+                const enqueue = await response.json();
+                state.jobId = enqueue.job_id || sessionId;
+                pollJob(state.jobId);
             } catch (error) {
                 handleProcessingError(error instanceof Error ? error : new Error('Unexpected error occurred.'));
             }
         });
     }
 
+    async function initYouTubeControls() {
+        if (!youtubeToggle) {
+            return;
+        }
+        try {
+            const response = await fetch('/api/youtube/status');
+            const data = await response.json();
+            const authorized = !!data.authorized;
+            youtubeToggle.disabled = !authorized;
+            const hint = document.getElementById('youtubeHint');
+            if (hint) {
+                hint.textContent = authorized
+                    ? 'Auto-upload the final video to YouTube'
+                    : 'Not connected — run `python -m utils.youtube_uploader` once to enable';
+            }
+            if (!authorized) {
+                youtubeToggle.checked = false;
+            }
+        } catch (error) {
+            console.warn('Could not check YouTube status', error);
+        }
+    }
+
+    if (youtubeToggle && youtubePrivacySelect) {
+        const syncPrivacyState = () => {
+            youtubePrivacySelect.disabled = !youtubeToggle.checked;
+        };
+        youtubeToggle.addEventListener('change', syncPrivacyState);
+        syncPrivacyState();
+    }
+
     resetProcessingView();
     resetSceneDetails();
     resetScriptDetails();
     showSection('upload');
+    initYouTubeControls();
 });

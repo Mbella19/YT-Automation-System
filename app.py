@@ -85,6 +85,10 @@ def _get_services():
             model_name=config.GEMINI_TTS_MODEL,
             voice_name=config.GEMINI_TTS_VOICE,
             api_version=config.GEMINI_API_VERSION,
+            delay_seconds=config.GEMINI_TTS_DELAY_SECONDS,
+            max_retries=config.GEMINI_TTS_MAX_RETRIES,
+            retry_backoff_seconds=config.GEMINI_TTS_RETRY_BACKOFF_SECONDS,
+            max_wait_seconds=config.GEMINI_TTS_MAX_WAIT_SECONDS,
         )
         _services['video_processor'] = VideoProcessor(config.FFMPEG_PATH)
         _services['initialized'] = True
@@ -264,7 +268,10 @@ def _run_pipeline(job):
 
         # Step 3: Narration audio.
         job.set_stage("Generating narration")
-        audio_files = gemini_tts.generate_audio_for_scenes(scenes_data, session_audio_dir)
+        audio_files = gemini_tts.generate_audio_for_scenes(
+            scenes_data, session_audio_dir,
+            skip_failed=config.GEMINI_TTS_SKIP_FAILED_SCENES,
+        )
         logger.info(f"✓ Generated {len(audio_files)} audio files")
 
         # Step 4: Render clips.

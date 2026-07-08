@@ -58,6 +58,17 @@ CLIP_DURATION_MAX = _env_int("CLIP_DURATION_MAX", 20)  # seconds
 # Gemini native TTS settings (uses the generativelanguage API, not Cloud TTS)
 GEMINI_TTS_MODEL = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
 GEMINI_TTS_VOICE = os.getenv("GEMINI_TTS_VOICE", "Kore")  # Prebuilt Gemini voice
+# TTS rate limiting + retry. Free tier allows very few requests/min for the TTS
+# model (e.g. 3 RPM), so we pace calls and retry 429s honoring the server delay.
+GEMINI_TTS_DELAY_SECONDS = _env_int("GEMINI_TTS_DELAY_SECONDS", 0)  # proactive delay between calls
+GEMINI_TTS_MAX_RETRIES = _env_int("GEMINI_TTS_MAX_RETRIES", 5)
+GEMINI_TTS_RETRY_BACKOFF_SECONDS = _env_int("GEMINI_TTS_RETRY_BACKOFF_SECONDS", 20)
+# If a 429 asks us to wait longer than this, treat it as an exhausted quota
+# window (e.g. daily limit) and stop retrying rather than blocking the job.
+GEMINI_TTS_MAX_WAIT_SECONDS = _env_int("GEMINI_TTS_MAX_WAIT_SECONDS", 120)
+# If a scene's audio still fails after retries, skip it instead of failing the whole
+# job (the clip for that scene is skipped). Set False to fail hard.
+GEMINI_TTS_SKIP_FAILED_SCENES = _env_bool("GEMINI_TTS_SKIP_FAILED_SCENES", True)
 
 # Gemini generation settings
 # NOTE: alignment/timestamping wants deterministic output, so temperatures are low.

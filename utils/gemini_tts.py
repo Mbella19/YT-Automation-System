@@ -59,6 +59,16 @@ def _retry_delay_from_error(exc, default):
     return default
 
 
+def _is_daily_quota_exhausted(exc):
+    """
+    True if a 429 is a PER-DAY quota (e.g. free tier's 10 TTS requests/day).
+    These won't clear for hours, so retrying is pointless — skip fast instead of
+    waiting out the (misleading) per-minute retryDelay repeatedly.
+    """
+    text = str(exc)
+    return "PerDay" in text or "RequestsPerDay" in text
+
+
 class GeminiTTS:
     def __init__(self, api_key, model_name="gemini-2.5-flash-preview-tts",
                  voice_name="Kore", api_version="v1beta",
@@ -134,6 +144,12 @@ class GeminiTTS:
                 if status is not None and status not in _RETRYABLE_STATUS:
                     raise
                 last_error = exc
+                # A daily-quota 429 won't clear for hours — don't burn retries
+                # waiting out the per-minute hint repeatedly; give up now.
+                if status == 429 and _is_daily_quota_exhausted(exc):
+                    logger.error("TTS daily quota exhausted (free tier). Skipping without retry — "
+                                 "enable billing to lift the daily limit.")
+                    break
                 if attempt >= self.max_retries:
                     break
                 if status == 429:

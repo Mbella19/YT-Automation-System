@@ -104,6 +104,31 @@ python app.py             # serves http://127.0.0.1:5001
 3. Run `python -m utils.youtube_uploader` once and complete consent.
 4. The "Auto-upload to YouTube" toggle in the UI becomes enabled.
 
+## 🎬 Phase 3 — Real-movie test (Weapons 2025) + TTS 429 fix
+
+Ran the full pipeline on a 12-minute excerpt of a real 1080p film in autonomous
+mode (no script). Results:
+- Split into 2 chunks; **Gemini generated 15 coherent recap scenes** with correct
+  character names, plot beats, 5–20s durations, ~10s gaps, and correct cross-chunk
+  timestamp offset. The autonomous mode works on real footage.
+- The test caught a real bug: **the TTS path had no rate-limit handling**, so a
+  free-tier 429 (the TTS model allows ~3 requests/min) failed the whole job.
+
+### Fix: TTS retry + rate-limit resilience
+- Retries 429/5xx honoring the server's suggested `retryDelay` ("Please retry in Ns").
+- `GEMINI_TTS_MAX_WAIT_SECONDS` cap: a longer delay means a daily-quota window, so it
+  stops retrying instead of blocking the job for minutes/hours.
+- `GEMINI_TTS_SKIP_FAILED_SCENES` (default on): a scene that still fails is skipped
+  (its clip is omitted) rather than failing the whole recap; only fails if *no*
+  scene produced audio.
+- Optional proactive pacing via `GEMINI_TTS_DELAY_SECONDS`.
+- Verified: recovered a scene after a real free-tier 429.
+
+### ⚠️ Practical note: enable billing
+The provided key is on the **Gemini free tier**, whose TTS quota (~3 req/min, plus a
+low daily cap) makes a full-length recap slow and prone to hitting daily limits.
+For real use, enable billing on the Google Cloud project so TTS isn't throttled.
+
 ## 🔭 Still open (nice-to-have)
 - Auto-generated **thumbnails** (Gemini image model + `thumbnails.set`).
 - Multiple concurrent workers if you outgrow one (currently intentional FIFO).
